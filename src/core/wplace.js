@@ -1,7 +1,8 @@
 // src/core/wplace.js
 // Browser-side Wplace canvas reader. NO Node dependencies.
-// Downloads tile PNGs via GM_xmlhttpRequest (CORS-proof), decodes them to
-// raw RGBA once, caches them, and reads pixels / horizontal sequences.
+// Downloads tile PNGs via plain fetch (same CORS rights as the page itself —
+// no extension superpowers, no credentials sent), decodes them to raw RGBA
+// once, caches them, and reads pixels / horizontal sequences.
 // Automatically crosses tile boundaries (pixel 999 -> next tile pixel 0).
 
 const { matchColor } = require('./palette.js');
@@ -20,20 +21,13 @@ function tileUrl(tileX, tileY) {
     return TILE_BASE_URL + '/' + tileX + '/' + tileY + '.png';
 }
 
-// GM_xmlhttpRequest wrapped in a Promise. Resolves null on 404 (unpainted tile).
-function gmFetchBlob(url) {
-    return new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: url,
-            responseType: 'blob',
-            onload: (res) => {
-                if (res.status === 404) return resolve(null);
-                if (res.status !== 200) return reject(new Error('HTTP ' + res.status + ' for ' + url));
-                resolve(res.response);
-            },
-            onerror: () => reject(new Error('Network error fetching ' + url))
-        });
+// Plain fetch: same CORS rights as the page itself, no cross-origin superpowers.
+// credentials omitted: tiles are public, we send no cookies anywhere.
+function fetchTileBlob(url) {
+    return fetch(url, { credentials: 'omit' }).then((res) => {
+        if (res.status === 404) return null; // unpainted tile
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
+        return res.blob();
     });
 }
 
@@ -42,7 +36,7 @@ async function getTileImageData(tileX, tileY) {
     const key = tileX + ',' + tileY;
     if (tileCache.has(key)) return tileCache.get(key);
 
-    const blob = await gmFetchBlob(tileUrl(tileX, tileY));
+    const blob = await fetchTileBlob(tileUrl(tileX, tileY));
     if (blob === null) {
         tileCache.set(key, null);
         return null;

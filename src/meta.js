@@ -7,7 +7,6 @@
 // @match        https://wplace.live/*
 // @run-at       document-idle
 // @noframes
-// @grant        GM_xmlhttpRequest
-// @connect      backend.wplace.live
+// @grant        none
 // @license      GPL-3.0
 // ==/UserScript==
