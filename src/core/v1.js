@@ -1,3 +1,5 @@
+// src/v1.js
+
 const { ALPHABET } = require('./alphabet.js');
 const { djb2Checksum5 } = require('./checksum.js');
 

@@ -1,3 +1,5 @@
+// src/colors.js
+
 const PNG = require('pngjs').PNG;
 const fs = require('fs');
 
