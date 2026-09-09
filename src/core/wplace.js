@@ -74,6 +74,9 @@ async function readSequenceHorizontal(startTileX, startTileY, startPx, startPy, 
     let curTileX = startTileX;
     let curPx = startPx;
 
+    // Normalize negative in-tile offsets (windowed reads near tile borders)
+    while (curPx < 0) { curPx += TILE_SIZE; curTileX -= 1; }
+
     for (let i = 0; i < length; i++) {
         const color = await readPixel(curTileX, startTileY, curPx, startPy);
         ids.push(color.id);

@@ -2,22 +2,50 @@
 
 Encode, hide, and read secret messages in the pixel canvas of [wplace.live](https://wplace.live).
 Unofficial tool — not affiliated with wplace.
+
 ## Userscript usage
 
 Install `dist/script.user.js` with Tampermonkey (or build your own, see Build & test below).
 
-    Alt+Click   decode the message starting at the clicked pixel
-    Alt+M       prompt for mode + text -> inject an *unplaced* template -> reload;
+    Alt+C       toggle the ColorCoder GUI (encode, decode, settings)
+    Alt+Click   decode the message starting at the clicked pixel (V2 or V1 fallback)
+    Alt+M       legacy: prompt for mode + text -> inject an *unplaced* template -> reload;
                 then place it with the native overlay GUI
 
 ## What it does
 
-- **Encodes** text into a horizontal string of wplace palette pixels (V1 protocol).
-- **Decodes** messages straight from the live canvas: Alt+Click the black sync pixel.
-- **Injects** encoded strips into wplace's *built-in* template/overlay system
+- **Encodes** text into a horizontal string of wplace palette pixels (V1 and V2 protocols).
+- **Decodes** messages straight from the live canvas: Alt+Click any sync pixel (or use the GUI).
+- **Injects** encoded strips into wplace's *built-in* template/overlay system via the GUI
   (type text → overlay appears in the native list → place it with the native GUI).
+- Supports 4 encoding modes in V2: Lite/Full text, using either All (64) or Free (32) colors.
 
-## The V1 protocol
+## The V2 protocol
+
+V2 introduces a highly visible 4-pixel sync pattern and a 4-pixel header that only uses free colors, making messages paintable by new users.
+
+    [ pixels 0-3 ]    [ pixels 4-7 ]         [ pixels 8...          ]
+    [ 4-px sync ]     [ 20-bit header ]      [ payload (N pixels)   ]
+
+Sync: exact sequence of rare free colors `[26, 27, 24, 21]` (Dark Pink, Pink, Purple, Indigo).
+
+Header (always uses 32 free colors, 5 bits each = 20 bits):
+
+    mode     1 bit    0 = Lite, 1 = Full
+    free     1 bit    0 = All colors (6-bit payload), 1 = Free colors (5-bit payload)
+    length  10 bits   payload length in PIXELS (max 1023)
+    crc      6 bits   djb2 mod 64 over mode+free+length+payload bit-string
+    reserved 2 bits   (must be 0)
+
+Payload modes:
+- **Lite locked** — 1 pixel = 1 char (6-bit). Space maps to Transparent (id 0).
+- **Lite free** — 6-bit alphabet indices packed into 5-bit pixels (6 px = 5 chars).
+- **Full locked** — UTF-8 bytes packed into 6-bit pixels (4 px = 3 bytes).
+- **Full free** — UTF-8 bytes packed into 5-bit pixels (8 px = 5 bytes).
+
+**Corruption policy** — decode anyway, warn on CRC mismatch, bad padding, or truncation. Never silently drop.
+
+## The V1 protocol (Legacy)
 
 64 colors = 6 bits per pixel.
 
@@ -26,17 +54,13 @@ Install `dist/script.user.js` with Tampermonkey (or build your own, see Build & 
 
 Header, high → low bit:
 
-    version  2 bits   format version (currently 0; value 3 reserved as escape hatch)
+    version  2 bits   format version (currently 0)
     mode     1 bit    0 = Lite, 1 = Full
     length  10 bits   payload length in PIXELS (max 1023)
     crc      5 bits   djb2 mod 32 over version+mode+length+payload bit-string
 
 - **Lite** — 1 pixel = 1 character, 62-char alphabet (a-z, 0-9, punctuation; ids 62-63 unused).
 - **Full** — UTF-8 bytes bit-packed into 6-bit chunks (4 pixels = 3 bytes), base64-style.
-- **Corruption policy** — decode anyway, warn on CRC mismatch. Never silently drop.
-
-The version field is the upgrade path: future formats (2D blocks, bigger CRC, ...)
-pick a new version number; old decoders say "unknown version" instead of producing garbage.
 
 ## Repository layout
 
@@ -45,10 +69,12 @@ pick a new version number; old decoders say "unknown version" instead of produci
       script.js      entry point: hotkeys, fetch-spy, decode + inject flows
       core/
         alphabet.js  Lite alphabet
-        checksum.js  5-bit djb2
+        checksum.js  5-bit and 6-bit djb2
         palette.js   64-color wplace palette + RGB matching (browser & Node safe)
         colors.js    Node-only PNG IO (savePNG/readPNG) used by tests
         v1.js        V1 codec (encode/decode, header pack/unpack)
+        v2.js        V2 codec (sync, 4-mode payload packing, windowed sync search)
+        gui.js       floating draggable UI panel (encode, decode, settings)
         render.js    pixel-id sequence -> 1xN PNG Blob (canvas)
         wplace.js    live-canvas reader (tile fetch, pixel reads, boundary walk)
         templates.js writes overlays into wplace's native storage (IDB + localStorage)
@@ -65,7 +91,7 @@ pick a new version number; old decoders say "unknown version" instead of produci
 ## Technical notes (hard-won)
 
 - Click coordinates come from intercepting the page's own
-  `/api/pixel/{tileX}/{tileY}?x=..&y=..` fetch — no map projection math needed.
+  `/pixel/{tileX}/{tileY}?x=..&y=..` fetch — no map projection math needed.
 - Canvas tiles live at `backend.wplace.live/files/s0/tiles/{x}/{y}.png`, 1000x1000;
   the reader walks horizontally across tile boundaries.
 - Native overlays are client-side: PNG blobs in IndexedDB (`wplace-templates` /

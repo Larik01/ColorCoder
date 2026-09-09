@@ -2,25 +2,38 @@
 // Pure DOM/CSS floating panel. No dependencies on wplace internals.
 
 const { ALPHABET } = require('./alphabet.js');
+const { encodeV1 } = require('./v1.js');
+const { encodeV2 } = require('./v2.js');
 
 const LS_KEY = 'colorcoder-gui-state';
 
 const defaultState = {
     x: 20, y: 20, collapsed: false, tab: 'encode',
+    enc: { proto: 2, mode: 0, free: 1 },
     settings: { autoReload: false, consoleLogs: true }
 };
 
 function loadState() {
-    try { return Object.assign({}, defaultState, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); }
-    catch { return { ...defaultState }; }
+    try {
+        const s = Object.assign({}, defaultState, JSON.parse(localStorage.getItem(LS_KEY) || '{}'));
+        s.enc = Object.assign({}, defaultState.enc, s.enc);
+        s.settings = Object.assign({}, defaultState.settings, s.settings);
+        return s;
+    } catch (e) {
+        const s = Object.assign({}, defaultState);
+        s.enc = Object.assign({}, defaultState.enc);
+        s.settings = Object.assign({}, defaultState.settings);
+        return s;
+    }
 }
 function saveState(state) {
     localStorage.setItem(LS_KEY, JSON.stringify(state));
 }
 
 let state = loadState();
-let panel, header, body, statusEl, encodePane, decodePane, settingsPane;
-let encodeBtn, textArea, modeSelect, reloadBtn;
+let panel, header, body, statusEl, statusTimer = null;
+let encodePane, decodePane, settingsPane;
+let encodeBtn, textArea, modeSelect, protoSelect, palSelect, palRow, liteWarn, previewEl, hintEl;
 let onEncodeCb = null;
 
 function css() {
@@ -74,11 +87,12 @@ function css() {
         .cc-status.success { display: block; background: #27ae60; color: #fff; }
         .cc-status.error { display: block; background: #c0392b; color: #fff; }
         .cc-warn { color: #e74c3c; font-size: 11px; margin-top: 4px; }
-        .cc-decode-result {
-            background: #0f0f11; padding: 8px; border-radius: 3px; 
-            margin-bottom: 8px; word-break: break-all; border: 1px solid #333;
-        }
         .cc-meta { font-size: 10px; color: #888; margin-bottom: 4px; }
+        .cc-decode-result {
+            background: #0f0f11; padding: 8px; border-radius: 3px;
+            margin-bottom: 8px; word-break: break-all; border: 1px solid #333;
+            white-space: pre-wrap;
+        }
         .cc-shield { position: fixed; inset: 0; z-index: 999998; cursor: move; }
     `;
 }
@@ -121,18 +135,37 @@ function createPanel() {
     encodePane.dataset.tab = 'encode';
     encodePane.innerHTML = `
         <div class="cc-row">
-            <label>Protocol: V1</label>
+            <label>Protocol</label>
+            <select id="cc-proto">
+                <option value="1">V1 (legacy)</option>
+                <option value="2">V2</option>
+            </select>
+        </div>
+        <div class="cc-row">
+            <label>Mode</label>
             <select id="cc-mode">
-                <option value="0">Lite (basic chars, 1px/char)</option>
-                <option value="1">Full (UTF-8, 4px/3bytes)</option>
+                <option value="0">Lite (dictionary chars)</option>
+                <option value="1">Full (any UTF-8)</option>
+            </select>
+        </div>
+        <div class="cc-row" id="cc-palrow">
+            <label>Palette</label>
+            <select id="cc-pal">
+                <option value="1">Free colors (32, 5-bit)</option>
+                <option value="0">All colors (64, 6-bit)</option>
             </select>
         </div>
         <div class="cc-row">
             <label>Message Text</label>
             <textarea id="cc-text" placeholder="Type message..."></textarea>
             <div id="cc-litewarn" class="cc-warn" style="display:none;"></div>
+            <div id="cc-hint" class="cc-meta" style="display:none; margin-top:4px;">
+                Transparent (id 0) pixels paint like any other color; Lite spaces use it.
+            </div>
+            <div id="cc-preview" class="cc-meta" style="margin-top:4px;"></div>
         </div>
         <button id="cc-encode" class="cc-btn">Create Wplace Overlay</button>
+        <div id="cc-action" style="margin-top:6px;"></div>
     `;
     body.appendChild(encodePane);
 
@@ -141,7 +174,7 @@ function createPanel() {
     decodePane.dataset.tab = 'decode';
     decodePane.innerHTML = `
         <div class="cc-row" style="color:#888; font-size:11px; margin-bottom:10px;">
-            Alt+Click a Black sync pixel on the canvas to decode.
+            Alt+Click any sync pixel: V2 purple row or V1 black marker.
         </div>
         <div id="cc-decode-empty" style="color:#555; text-align:center; padding:20px;">
             No messages decoded yet.
@@ -175,7 +208,6 @@ function createPanel() {
 }
 
 function bindEvents() {
-    // Tabs
     body.querySelectorAll('.cc-tabs button').forEach(btn => {
         btn.addEventListener('click', () => {
             state.tab = btn.dataset.tab;
@@ -187,7 +219,6 @@ function bindEvents() {
         });
     });
 
-    // Header buttons
     header.querySelector('#cc-collapse').addEventListener('click', () => {
         state.collapsed = !state.collapsed;
         body.style.display = state.collapsed ? 'none' : 'block';
@@ -198,7 +229,6 @@ function bindEvents() {
         panel.style.display = 'none';
     });
 
-    // Dragging
     let drag = null;
     header.addEventListener('mousedown', (e) => {
         if (e.target.closest('button')) return;
@@ -223,42 +253,73 @@ function bindEvents() {
         }
     });
 
-    // Encode Logic
+    // Encode pane wiring
+    protoSelect = encodePane.querySelector('#cc-proto');
     modeSelect = encodePane.querySelector('#cc-mode');
+    palSelect = encodePane.querySelector('#cc-pal');
+    palRow = encodePane.querySelector('#cc-palrow');
     textArea = encodePane.querySelector('#cc-text');
     encodeBtn = encodePane.querySelector('#cc-encode');
-    const liteWarn = encodePane.querySelector('#cc-litewarn');
+    liteWarn = encodePane.querySelector('#cc-litewarn');
+    previewEl = encodePane.querySelector('#cc-preview');
+    hintEl = encodePane.querySelector('#cc-hint');
 
-    function validateLite() {
-        if (modeSelect.value === '0') {
-            const text = textArea.value;
-            const bad = [];
+    protoSelect.value = String(state.enc.proto);
+    modeSelect.value = String(state.enc.mode);
+    palSelect.value = String(state.enc.free);
+
+    function refreshEncodePane() {
+        const proto = parseInt(protoSelect.value, 10);
+        const mode = parseInt(modeSelect.value, 10);
+        const free = parseInt(palSelect.value, 10);
+        state.enc = { proto, mode, free };
+        saveState(state);
+
+        palRow.style.display = (proto === 2) ? '' : 'none';
+        hintEl.style.display = (proto === 2 && mode === 0) ? '' : 'none';
+
+        const text = textArea.value;
+        const bad = [];
+        if (mode === 0) {
             for (const ch of text) {
                 if (!ALPHABET.includes(ch) && !bad.includes(ch)) bad.push(ch);
             }
-            if (bad.length > 0) {
-                liteWarn.style.display = 'block';
-                liteWarn.textContent = `Lite cannot encode: ${bad.join(', ')}. Use Full.`;
-                encodeBtn.disabled = true;
-            } else {
-                liteWarn.style.display = 'none';
-                encodeBtn.disabled = false;
-            }
-        } else {
-            liteWarn.style.display = 'none';
-            encodeBtn.disabled = false;
         }
+        if (bad.length > 0) {
+            liteWarn.style.display = 'block';
+            liteWarn.textContent = 'Lite cannot encode: ' + bad.join(' ') + ' - use Full.';
+            previewEl.textContent = '';
+            encodeBtn.disabled = true;
+            return;
+        }
+        liteWarn.style.display = 'none';
+
+        const enc = (proto === 2) ? encodeV2(text, mode, free) : encodeV1(text, mode);
+        if (!enc) {
+            previewEl.textContent = 'Message too long: payload exceeds 1023 px.';
+            encodeBtn.disabled = true;
+            return;
+        }
+        const prefix = (proto === 2) ? 8 : 4;
+        previewEl.textContent = 'Payload ' + enc.length + ' px + ' + prefix +
+            ' px prefix = ' + (enc.length + prefix) + ' px total.';
+        encodeBtn.disabled = false;
     }
 
-    modeSelect.addEventListener('change', validateLite);
-    textArea.addEventListener('input', validateLite);
-    validateLite();
+    protoSelect.addEventListener('change', refreshEncodePane);
+    modeSelect.addEventListener('change', refreshEncodePane);
+    palSelect.addEventListener('change', refreshEncodePane);
+    textArea.addEventListener('input', refreshEncodePane);
+    refreshEncodePane();
 
     encodeBtn.addEventListener('click', () => {
-        if (onEncodeCb) onEncodeCb(textArea.value, parseInt(modeSelect.value, 10));
+        clearAction();
+        if (onEncodeCb) {
+            onEncodeCb(textArea.value, state.enc.mode, state.enc.free, state.enc.proto);
+        }
     });
 
-    // Settings Logic
+    // Settings wiring
     settingsPane.querySelector('#cc-autoreload').addEventListener('change', (e) => {
         state.settings.autoReload = e.target.checked; saveState(state);
     });
@@ -270,6 +331,43 @@ function bindEvents() {
         panel.style.left = '20px'; panel.style.top = '20px';
         saveState(state);
     });
+}
+
+// --- Status line (auto-dismisses) and action slot ---
+
+function setStatus(msg, type = 'info', timeout = 5000) {
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+    statusEl.textContent = msg;
+    statusEl.className = 'cc-status ' + type;
+    if (timeout > 0) {
+        statusTimer = setTimeout(() => {
+            statusEl.textContent = '';
+            statusEl.className = 'cc-status';
+            statusTimer = null;
+        }, timeout);
+    }
+}
+
+function actionSlot() {
+    return encodePane ? encodePane.querySelector('#cc-action') : null;
+}
+
+function clearAction() {
+    const slot = actionSlot();
+    if (slot) slot.innerHTML = '';
+}
+
+function showReloadButton() {
+    const slot = actionSlot();
+    if (!slot) return;
+    slot.innerHTML = '';
+    const btn = document.createElement('button');
+    btn.className = 'cc-btn';
+    btn.style.background = '#555';
+    btn.style.color = '#fff';
+    btn.textContent = 'Overlay injected - Reload Now';
+    btn.onclick = () => location.reload();
+    slot.appendChild(btn);
 }
 
 // --- Public API ---
@@ -288,11 +386,6 @@ function toggle() {
     else panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
 }
 
-function setStatus(msg, type = 'info') {
-    statusEl.textContent = msg;
-    statusEl.className = 'cc-status ' + type;
-}
-
 function onEncode(cb) { onEncodeCb = cb; }
 
 function showDecodeResult(result, tileInfo) {
@@ -301,17 +394,25 @@ function showDecodeResult(result, tileInfo) {
     empty.style.display = 'none';
     content.style.display = 'block';
 
-    const modeStr = result.mode === 0 ? 'Lite' : 'Full';
-    const crcStr = result.valid ? 'CRC OK' : `CRC WARNING (Stored: ${result.storedChecksum} != Computed: ${result.computedChecksum})`;
-    const posStr = tileInfo ? `Tile: ${tileInfo.tileX},${tileInfo.tileY} | Px: ${tileInfo.px},${tileInfo.py}` : '';
+    const proto = (result.version === 2) ? 'V2' : 'V1';
+    let modeStr = (result.mode === 0) ? 'Lite' : 'Full';
+    if (result.version === 2) modeStr += result.free ? ' (free colors)' : ' (all colors)';
+    const crcStr = result.valid
+        ? 'CRC OK'
+        : 'CRC WARNING (stored ' + result.storedChecksum + ' != computed ' + result.computedChecksum + ')';
+    const posStr = tileInfo
+        ? 'Tile: ' + tileInfo.tileX + ',' + tileInfo.tileY + ' | Px: ' + tileInfo.px + ',' + tileInfo.py
+        : '';
 
     let warnHtml = '';
-    if (result.badChars) warnHtml += '<div class="cc-warn">Warning: Payload contains unmapped chars (replaced with "?")</div>';
-    if (result.badPadding) warnHtml += '<div class="cc-warn">Warning: Non-zero padding bits (possible corruption)</div>';
-    if (result.truncated) warnHtml += '<div class="cc-warn">Warning: Message truncated (sequence too short)</div>';
+    if (result.badChars) warnHtml += '<div class="cc-warn">Warning: payload contains unmapped values (replaced with "?")</div>';
+    if (result.badPadding) warnHtml += '<div class="cc-warn">Warning: non-zero padding bits (possible corruption)</div>';
+    if (result.truncated) warnHtml += '<div class="cc-warn">Warning: message truncated (sequence shorter than header length)</div>';
+    if (result.badHeaderColors) warnHtml += '<div class="cc-warn">Warning: header contains non-free color ids (possible corruption)</div>';
+    if (result.reserved) warnHtml += '<div class="cc-warn">Warning: reserved header bits set (' + result.reserved + ')</div>';
 
     content.innerHTML = `
-        <div class="cc-meta">${modeStr} | ${result.length} px | ${crcStr}</div>
+        <div class="cc-meta">${proto} ${modeStr} | ${result.length} px | ${crcStr}</div>
         <div class="cc-meta">${posStr}</div>
         ${warnHtml}
         <div class="cc-decode-result">${escapeHtml(result.text || '')}</div>
@@ -324,7 +425,6 @@ function showDecodeResult(result, tileInfo) {
         });
     });
 
-    // Auto switch to decode tab
     state.tab = 'decode';
     body.querySelectorAll('.cc-tabs button').forEach(b => b.classList.remove('active'));
     body.querySelector('.cc-tabs button[data-tab="decode"]').classList.add('active');
@@ -337,4 +437,8 @@ function escapeHtml(str) {
     return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
-module.exports = { init, show, toggle, setStatus, onEncode, showDecodeResult, getSettings: () => state.settings };
+module.exports = {
+    init, show, toggle, setStatus, onEncode, showDecodeResult,
+    clearAction, showReloadButton,
+    getSettings: () => state.settings
+};

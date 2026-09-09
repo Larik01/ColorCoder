@@ -1,9 +1,11 @@
 // src/script.js
-// Userscript ENTRY POINT.
-// Runs at document-start. Wraps fetch immediately.
-// Mounts GUI when DOM is ready.
+// Userscript ENTRY POINT. Bundled by esbuild with the core/ modules.
+//   Alt+Click any sync pixel -> decode (V2 windowed first, V1 fallback)
+//   Alt+M                    -> legacy V1 encode via prompts
+//   Alt+C                    -> toggle GUI
 
 const { encodeV1, decodeV1, unpackHeader, VERSION } = require('./core/v1.js');
+const { encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/v2.js');
 const { readSequenceHorizontal, readPixel } = require('./core/wplace.js');
 const { sequenceToPngBlob } = require('./core/render.js');
 const { injectTemplate } = require('./core/templates.js');
@@ -34,41 +36,68 @@ window.fetch = async function (...args) {
 
 // ==========================================================
 // 2. DECODER (Alt+Click)
+//    Reads an 11-px window where the clicked pixel sits at index 3.
+//    Slides the V2 sync across offsets 0..3; falls back to V1 marker.
 // ==========================================================
+const CLICK_INDEX = 3;
+const WINDOW_LEN = 11; // 3 before + clicked + 7 after = sync offset 0..3 + 4 header px
+
+function log(msg, style) {
+    if (!gui.getSettings().consoleLogs) return;
+    if (style) console.log('%c' + msg, style);
+    else console.log(msg);
+}
+
+function reportDecode(result, tileInfo) {
+    const proto = (result.version === 2) ? 'V2' : 'V1';
+    let modeStr = (result.mode === 0) ? 'Lite' : 'Full';
+    if (result.version === 2) modeStr += result.free ? '-free' : '';
+    if (result.valid) {
+        log('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length + ' px, crc OK)',
+            'color:#0c8;font-weight:bold');
+    } else {
+        log('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length +
+            ' px) - CORRUPTED (stored ' + result.storedChecksum +
+            ' != computed ' + result.computedChecksum + ')',
+            'color:#c80;font-weight:bold');
+    }
+    log(result.text);
+    gui.showDecodeResult(result, tileInfo);
+}
+
 async function attemptDecode(tileX, tileY, px, py) {
-    const head = await readSequenceHorizontal(tileX, tileY, px, py, 4);
+    const win = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, WINDOW_LEN);
 
-    if (head[0] !== 1) {
-        const c = await readPixel(tileX, tileY, px, py);
-        if (gui.getSettings().consoleLogs) {
-            console.log('[CC] Not a sync pixel (id ' + c.id + ' ' + c.name + '), nothing to decode here.');
-        }
+    // V2: slide the 4-px sync pattern across the window
+    const off = findSyncOffset(win);
+    if (off !== -1) {
+        const hdr = unpackHeaderV2(win[off + 4], win[off + 5], win[off + 6], win[off + 7]);
+        const total = off + PREFIX_LEN + hdr.length;
+        const seq = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, total);
+        const result = decodeV2(seq.slice(off));
+        if (!result) return;
+        reportDecode(result, { tileX, tileY, px, py });
         return;
     }
 
-    const header = unpackHeader(head[1], head[2], head[3]);
-    if (header.version !== VERSION) {
-        if (gui.getSettings().consoleLogs) console.warn('[CC] Unknown header version ' + header.version + ', cannot decode yet.');
-        gui.setStatus('Unknown V' + header.version + ' protocol. Cannot decode.', 'error');
+    // V1 fallback: Black start marker exactly at the clicked pixel
+    if (win[CLICK_INDEX] === 1) {
+        const header = unpackHeader(win[CLICK_INDEX + 1], win[CLICK_INDEX + 2], win[CLICK_INDEX + 3]);
+        if (header.version !== VERSION) {
+            log('[CC] Unknown V1 header version ' + header.version + ', cannot decode.');
+            gui.setStatus('Unknown V1 header version ' + header.version + '.', 'error');
+            return;
+        }
+        const sequence = await readSequenceHorizontal(tileX, tileY, px, py, 4 + header.length);
+        const result = decodeV1(sequence);
+        if (!result) return;
+        reportDecode(result, { tileX, tileY, px, py });
         return;
     }
 
-    const sequence = await readSequenceHorizontal(tileX, tileY, px, py, 4 + header.length);
-    const result = decodeV1(sequence);
-    if (!result) return;
-
-    const modeStr = result.mode === 0 ? 'Lite' : 'Full';
-    if (gui.getSettings().consoleLogs) {
-        if (result.valid) {
-            console.log('%c[CC] Decoded ' + modeStr + ' message (' + result.length + ' px, crc OK)', 'color:#0c8;font-weight:bold');
-        } else {
-            console.log('%c[CC] Decoded ' + modeStr + ' message (' + result.length + ' px) - CORRUPTED', 'color:#c80;font-weight:bold');
-        }
-        console.log(result.text);
-    }
-
-    // Show in GUI instead of alert
-    gui.showDecodeResult(result, { tileX, tileY, px, py });
+    const c = await readPixel(tileX, tileY, px, py);
+    log('[CC] Not a sync pixel (id ' + c.id + ' ' + c.name + '), nothing to decode here.');
+    gui.setStatus('Not a message sync pixel (' + c.name + ').', 'info');
 }
 
 let lastClick = { alt: false, t: 0 };
@@ -87,41 +116,38 @@ window.addEventListener('cc-click', (e) => {
 });
 
 // ==========================================================
-// 3. ENCODER (GUI + Legacy Alt+M)
+// 3. ENCODER (GUI + legacy Alt+M)
 // ==========================================================
 function isTyping(target) {
     return target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 }
 
-async function executeEncode(text, mode) {
+async function executeEncode(text, mode, free, protocol) {
+    gui.clearAction();
     gui.setStatus('Encoding and generating PNG...', 'info');
 
-    const enc = encodeV1(text, mode);
+    const enc = (protocol === 2) ? encodeV2(text, mode, free) : encodeV1(text, mode);
     if (!enc) {
-        gui.setStatus('Encode failed - check text and mode.', 'error');
+        gui.setStatus('Encode failed - character not in Lite alphabet, or message too long.', 'error');
         return;
     }
 
     try {
         const blob = await sequenceToPngBlob(enc.fullSequence);
-        const name = 'CC ' + (mode ? 'full' : 'lite') + ': ' + text.slice(0, 24);
+        const tag = (protocol === 2 ? 'CC2 ' : 'CC ') +
+            (mode ? 'full' : 'lite') +
+            (protocol === 2 && free ? '-free' : '') + ': ';
+        const name = tag + text.slice(0, 24);
         await injectTemplate(blob, name);
 
-        gui.setStatus('Overlay injected: ' + name, 'success');
-        if (gui.getSettings().consoleLogs) {
-            console.log('%c[CC] Injected "' + name + '" (' + enc.length + ' px).', 'color:#0c8;font-weight:bold');
-        }
+        log('[CC] Injected "' + name + '" (' + enc.length + ' px payload).', 'color:#0c8;font-weight:bold');
 
         if (gui.getSettings().autoReload) {
-            gui.setStatus('Reloading page...', 'info');
+            gui.setStatus('Reloading page...', 'info', 0);
             setTimeout(() => location.reload(), 500);
         } else {
-            // Add a reload button manually to the status area if not auto-reloading
-            const btn = document.createElement('button');
-            btn.textContent = 'Reload Now';
-            btn.style.cssText = 'margin-top:6px; background:#7fffd4; color:#000; border:none; padding:4px 8px; cursor:pointer; font-weight:bold; width:100%; border-radius:3px;';
-            btn.onclick = () => location.reload();
-            document.querySelector('.cc-status').appendChild(btn);
+            gui.setStatus('Overlay injected: ' + name, 'success');
+            gui.showReloadButton();
         }
     } catch (err) {
         console.error('[CC] Inject failed:', err);
@@ -129,7 +155,6 @@ async function executeEncode(text, mode) {
     }
 }
 
-// Legacy Alt+M (still works, triggers same encode logic via prompt)
 async function legacyMakeMessage() {
     const modeRaw = (prompt('Mode: l = Lite (basic chars), f = Full (any UTF-8)', 'l') || '').trim().toLowerCase();
     if (!modeRaw) return;
@@ -138,7 +163,7 @@ async function legacyMakeMessage() {
     const text = prompt('Message text:');
     if (!text) return;
 
-    await executeEncode(text, mode);
+    await executeEncode(text, mode, 0, 1); // legacy path stays V1, all colors
 }
 
 document.addEventListener('keydown', (e) => {
@@ -162,10 +187,8 @@ document.addEventListener('keydown', (e) => {
 function initApp() {
     gui.init();
     gui.onEncode(executeEncode);
-
-    if (gui.getSettings().consoleLogs) {
-        console.log('%c[CC] Ready. Alt+Click = decode, Alt+M = legacy encode, Alt+C = toggle GUI.', 'color:#0af;font-weight:bold');
-    }
+    log('[CC] Ready. Alt+Click = decode, Alt+M = legacy V1 encode, Alt+C = toggle GUI.',
+        'color:#0af;font-weight:bold');
 }
 
 if (document.readyState === 'loading') {
