@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ColorCoder
 // @namespace    color-coder
-// @version      0.1.0
+// @version      0.2.0
 // @description  Encodes and decodes hidden pixel messages on wplace.live.
 // @author       Larik01
 // @match        https://wplace.live/*
