@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         Wplace Message Decoder
+// @name         ColorCoder
 // @namespace    color-coder
 // @version      {{VERSION}}
-// @description  Decodes V1 pixel messages on wplace.live. Alt+Click a Black sync pixel.
+// @description  Encodes and decodes hidden pixel messages on wplace.live.
 // @author       Larik01
 // @match        https://wplace.live/*
-// @run-at       document-idle
+// @run-at       document-start
 // @noframes
 // @grant        none
 // @license      GPL-3.0

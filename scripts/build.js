@@ -16,15 +16,17 @@ const meta = fs.readFileSync(path.join(root, 'src', 'meta.js'), 'utf8').trim();
 const pkg = require(path.join(root, 'package.json'));
 const header = meta.replace('{{VERSION}}', pkg.version);
 
-// 2. Bundle everything into a single JS blob
 const result = esbuild.buildSync({
     entryPoints: [path.join(root, 'src', 'script.js')],
     bundle: true,
+    format: 'iife',
+    charset: 'utf8',
     minify: !dev,
     write: false,
     target: ['es2020'],
     logLevel: 'warning'
 });
+
 
 // 3. Glue header + bundle -> dist/script.user.js
 const bundle = result.outputFiles[0].text;
