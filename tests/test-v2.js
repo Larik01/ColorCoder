@@ -1,12 +1,11 @@
 // tests/test-v2.js
 // Node-side roundtrip, wire-shape and corruption tests for the V2 codec.
 const assert = require('assert');
-const { ALPHABET } = require('../src/core/alphabet.js');
 const {
-    encodeV2, decodeV2, packBits, unpackBits,
+    ALPHABET, encodeV2, decodeV2, packBits, unpackBits,
     charToIdLite, idToCharLite, findSyncOffset,
     SYNC, PREFIX_LEN, MAX_PAYLOAD
-} = require('../src/core/v2.js');
+} = require('../src/core/protocol.js');
 
 let passed = 0;
 function ok(name, fn) {

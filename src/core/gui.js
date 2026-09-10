@@ -1,9 +1,7 @@
 // src/core/gui.js
 // Pure DOM/CSS floating panel. No dependencies on wplace internals.
 
-const { ALPHABET } = require('./alphabet.js');
-const { encodeV1 } = require('./v1.js');
-const { encodeV2 } = require('./v2.js');
+const { ALPHABET, encodeV1, encodeV2 } = require('./protocol.js');
 
 const LS_KEY = 'colorcoder-gui-state';
 

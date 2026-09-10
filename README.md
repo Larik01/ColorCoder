@@ -4,8 +4,8 @@ Encode, hide, and read secret messages in the pixel canvas of [wplace.live](http
 Unofficial tool — not affiliated with wplace.
 
 ## Userscript usage
-
-Install `dist/script.user.js` with Tampermonkey (or build your own, see Build & test below).
+	
+Click [link](https://github.com/Larik01/ColorCoder/raw/refs/heads/main/dist/script.user.js) to install with Tampermonkey (or build your own, see Build & test below).
 
     Alt+C       toggle the ColorCoder GUI (encode, decode, settings)
     Alt+Click   decode the message starting at the clicked pixel (V2 or V1 fallback)

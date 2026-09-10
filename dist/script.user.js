@@ -10,7 +10,779 @@
 // @grant        none
 // @license      GPL-3.0
 // ==/UserScript==
-(()=>{var y=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);var M=y((tn,me)=>{var Ze=`abcdefghijklmnopqrstuvwxyz0123456789 .!?-_:;'"()[]{}@#$%&/=+<>`;me.exports={ALPHABET:Ze}});var X=y((nn,K)=>{function fe(e){let t=5381;for(let n=0;n<e.length;n++)t=(t<<5)+t+e.charCodeAt(n),t=t|0;return t&31}function Qe(e){let t=5381;for(let n=0;n<e.length;n++)t=(t<<5)+t+e.charCodeAt(n),t=t|0;return t&63}K.exports={djb2Checksum5:fe};K.exports={djb2Checksum5:fe,djb2Checksum6:Qe}});var Q=y((on,he)=>{var{ALPHABET:Y}=M(),{djb2Checksum5:et}=X(),H=1,T=0,J=1023;function tt(e){let t=[];for(let n of e){let o=Y.indexOf(n);if(o===-1)return console.warn('Character not in alphabet: "'+n+'"'),null;t.push(o)}return t}function nt(e){let t="",n=!1;for(let o of e){if(o<0||o>=Y.length){n=!0,t+="?";continue}t+=Y[o]}return{text:t,badChars:n}}function ot(e){let t=new TextEncoder().encode(e),n=[],o=0,a=0;for(let r of t)for(o=o<<8|r,a+=8;a>=6;)a-=6,n.push(o>>a&63);return a>0&&n.push(o<<6-a&63),n}function at(e){let t=[],n=0,o=0;for(let i of e)for(n=n<<6|i,o+=6;o>=8;)o-=8,t.push(n>>o&255);let a=o>0&&(n&(1<<o)-1)!==0;return{text:new TextDecoder().decode(new Uint8Array(t)),badPadding:a}}function ge(e,t,n,o){let a=e<<16|t<<15|n<<5|o;return[a>>12&63,a>>6&63,a&63]}function be(e,t,n){let o=e<<12|t<<6|n;return{version:o>>16&3,mode:o>>15&1,length:o>>5&1023,checksum:o&31}}function Z(e,t,n,o){let a=e.toString(2).padStart(2,"0")+t.toString(2).padStart(1,"0")+n.toString(2).padStart(10,"0"),r=o.map(i=>i.toString(2).padStart(6,"0")).join("");return et(a+r)}function rt(e,t){let n=t===0?tt(e):ot(e);if(!n)return null;if(n.length>J)return console.warn("Payload too long: "+n.length+" > "+J+" pixels"),null;let o=Z(T,t,n.length,n),a=ge(T,t,n.length,o);return{version:T,mode:t,length:n.length,checksum:o,header:a,payload:n,fullSequence:[H].concat(a,n),text:e}}function ct(e){if(!e||e.length<4)return console.warn("Sequence too short for V1 (need >= 4 pixels)"),null;let t=e[0]===H;t||console.warn("Invalid start marker: expected "+H+", got "+e[0]);let{version:n,mode:o,length:a,checksum:r}=be(e[1],e[2],e[3]);if(n!==T)return console.warn("Unknown header version "+n+". This codec only understands V"+T+"."),{version:n,startMarkerValid:t,valid:!1,unknownVersion:!0,text:null};let i=e.length-4,c=i<a;c&&console.warn("Truncated message: header says "+a+" px but only "+i+" available.");let l=e.slice(4,4+a),d=Z(n,o,l.length,l),g=d===r&&t&&!c,h,L=!1,R=!1;if(o===0){let b=nt(l);h=b.text,L=b.badChars}else{let b=at(l);h=b.text,R=b.badPadding}return L&&console.warn('Payload contains values outside Lite alphabet; replaced with "?".'),R&&console.warn("Non-zero padding bits at end of Full payload (possible corruption)."),{text:h,version:n,mode:o,length:a,storedChecksum:r,computedChecksum:d,valid:g,startMarkerValid:t,truncated:c,badChars:L,badPadding:R}}he.exports={encodeV1:rt,decodeV1:ct,packHeader:ge,unpackHeader:be,checksumFor:Z,START_MARKER:H,VERSION:T,MAX_PAYLOAD:J}});var re=y((an,Ce)=>{var{ALPHABET:A}=M(),{djb2Checksum6:it}=X(),B=[26,27,24,21],I=B.length,ye=4,D=I+ye,ee=1023,oe=2,V=A.indexOf(" ");function xe(e){let t=A.indexOf(e);return t===-1?-1:t===V?0:t<V?t+1:t}function ve(e){let t;e===0?t=V:e<=V?t=e-1:t=e;let n=A[t];return n!==void 0?n:"?"}function te(e,t,n){let o=(1<<t)-1,a=(1<<n)-1,r=[],i=0,c=0;for(let l of e)for(i=i<<t|l&o,c+=t;c>=n;)c-=n,r.push(i>>c&a);return c>0&&r.push(i<<n-c&a),r}function ne(e,t,n){let o=(1<<t)-1,a=(1<<n)-1,r=[],i=0,c=0;for(let g of e)for(i=i<<t|g&o,c+=t;c>=n;)c-=n,r.push(i>>c&a);let l=c,d=l>0?i&(1<<l)-1:0;return{values:r,leftover:l,padBits:d}}function st(e,t,n){if(t===0){if(!n){let r=[];for(let i of e){let c=xe(i);if(c===-1)return console.warn('Character not in alphabet: "'+i+'"'),null;r.push(c)}return r}let a=[];for(let r of e){let i=A.indexOf(r);if(i===-1)return console.warn('Character not in alphabet: "'+r+'"'),null;a.push(i)}return te(a,6,5)}let o=Array.from(new TextEncoder().encode(e));return te(o,8,n?5:6)}function lt(e,t,n){let o=!1,a=!1;if(t===0){if(!n){let d="";for(let g of e){let h=ve(g);h==="?"&&(o=!0),d+=h}return{text:d,badChars:o,badPadding:a}}let c=ne(e,5,6);a=c.padBits!==0;let l="";for(let d of c.values){if(d<0||d>=A.length){o=!0,l+="?";continue}l+=A[d]}return{text:l,badChars:o,badPadding:a}}let r=ne(e,n?5:6,8);return a=r.padBits!==0,{text:new TextDecoder().decode(new Uint8Array(r.values)),badChars:o,badPadding:a}}function we(e,t,n,o){let a=(e&1)<<19|(t&1)<<18|(n&1023)<<8|(o&63)<<2;return[a>>15&31,a>>10&31,a>>5&31,a&31]}function ke(e,t,n,o){let a=e>31||t>31||n>31||o>31,r=(e&31)<<15|(t&31)<<10|(n&31)<<5|o&31;return{mode:r>>19&1,free:r>>18&1,length:r>>8&1023,checksum:r>>2&63,reserved:r&3,badHeaderColors:a}}function ae(e,t,n,o){let a=t?5:6,r=(e&1).toString(2)+(t&1).toString(2)+n.toString(2).padStart(10,"0"),i=o.map(c=>c.toString(2).padStart(a,"0")).join("");return it(r+i)}function dt(e,t,n){t=t?1:0,n=n?1:0;let o=st(e,t,n);if(!o)return null;if(o.length>ee)return console.warn("Payload too long: "+o.length+" > "+ee+" pixels"),null;let a=ae(t,n,o.length,o),r=we(t,n,o.length,a);return{version:oe,mode:t,free:n,length:o.length,checksum:a,header:r,payload:o,fullSequence:B.concat(r,o),text:e}}function ut(e){if(!e||e.length<D)return console.warn("Sequence too short for V2 (need >= "+D+" pixels)"),null;let t=!0;for(let q=0;q<I;q++)if(e[q]!==B[q]){t=!1;break}t||console.warn("Invalid V2 sync pattern.");let n=ke(e[4],e[5],e[6],e[7]),o=n.mode,a=n.free,r=n.length,i=n.checksum,c=n.reserved,l=n.badHeaderColors,d=e.length-D,g=d<r;g&&console.warn("Truncated message: header says "+r+" px but only "+d+" available.");let h=e.slice(D,D+r),L=ae(o,a,h.length,h),R=t&&!g&&L===i,b=lt(h,o,a);return b.badChars&&console.warn('Payload contains values outside Lite alphabet; replaced with "?".'),b.badPadding&&console.warn("Non-zero padding bits at end of payload (possible corruption)."),l&&console.warn("Header contains non-free color ids (possible corruption)."),c!==0&&console.warn("Reserved header bits set ("+c+"); newer protocol flags?"),{text:b.text,version:oe,mode:o,free:a,length:r,storedChecksum:i,computedChecksum:L,valid:R,syncValid:t,truncated:g,badChars:b.badChars,badPadding:b.badPadding,badHeaderColors:l,reserved:c}}function pt(e){if(!e||e.length<I)return-1;for(let t=0;t<=e.length-I;t++){let n=!0;for(let o=0;o<I;o++)if(e[t+o]!==B[o]){n=!1;break}if(n)return t}return-1}Ce.exports={encodeV2:dt,decodeV2:ut,packHeaderV2:we,unpackHeaderV2:ke,checksumForV2:ae,packBits:te,unpackBits:ne,charToIdLite:xe,idToCharLite:ve,findSyncOffset:pt,SYNC:B,SYNC_LEN:I,HEADER_LEN:ye,PREFIX_LEN:D,MAX_PAYLOAD:ee,VERSION:oe}});var ce=y((rn,Ee)=>{var C=[{id:0,name:"Transparent",rgb:[0,0,0],premium:!1},{id:1,name:"Black",rgb:[0,0,0],premium:!1},{id:2,name:"Dark Gray",rgb:[60,60,60],premium:!1},{id:3,name:"Gray",rgb:[120,120,120],premium:!1},{id:4,name:"Light Gray",rgb:[210,210,210],premium:!1},{id:5,name:"White",rgb:[255,255,255],premium:!1},{id:6,name:"Deep Red",rgb:[96,0,24],premium:!1},{id:7,name:"Red",rgb:[237,28,36],premium:!1},{id:8,name:"Orange",rgb:[255,127,39],premium:!1},{id:9,name:"Gold",rgb:[246,170,9],premium:!1},{id:10,name:"Yellow",rgb:[249,221,59],premium:!1},{id:11,name:"Light Yellow",rgb:[255,250,188],premium:!1},{id:12,name:"Dark Green",rgb:[14,185,104],premium:!1},{id:13,name:"Green",rgb:[19,230,123],premium:!1},{id:14,name:"Light Green",rgb:[135,255,94],premium:!1},{id:15,name:"Dark Teal",rgb:[12,129,110],premium:!1},{id:16,name:"Teal",rgb:[16,174,166],premium:!1},{id:17,name:"Light Teal",rgb:[19,225,190],premium:!1},{id:18,name:"Dark Blue",rgb:[40,80,158],premium:!1},{id:19,name:"Blue",rgb:[64,147,228],premium:!1},{id:20,name:"Cyan",rgb:[96,247,242],premium:!1},{id:21,name:"Indigo",rgb:[107,80,246],premium:!1},{id:22,name:"Light Indigo",rgb:[153,177,251],premium:!1},{id:23,name:"Dark Purple",rgb:[120,12,153],premium:!1},{id:24,name:"Purple",rgb:[170,56,185],premium:!1},{id:25,name:"Light Purple",rgb:[224,159,249],premium:!1},{id:26,name:"Dark Pink",rgb:[203,0,122],premium:!1},{id:27,name:"Pink",rgb:[236,31,128],premium:!1},{id:28,name:"Light Pink",rgb:[243,141,169],premium:!1},{id:29,name:"Dark Brown",rgb:[104,70,52],premium:!1},{id:30,name:"Brown",rgb:[149,104,42],premium:!1},{id:31,name:"Beige",rgb:[248,178,119],premium:!1},{id:32,name:"Medium Gray",rgb:[170,170,170],premium:!0},{id:33,name:"Dark Red",rgb:[165,14,30],premium:!0},{id:34,name:"Light Red",rgb:[250,128,114],premium:!0},{id:35,name:"Dark Orange",rgb:[228,92,26],premium:!0},{id:36,name:"Light Tan",rgb:[214,181,148],premium:!0},{id:37,name:"Dark Goldenrod",rgb:[156,132,49],premium:!0},{id:38,name:"Goldenrod",rgb:[197,173,49],premium:!0},{id:39,name:"Light Goldenrod",rgb:[232,212,95],premium:!0},{id:40,name:"Dark Olive",rgb:[74,107,58],premium:!0},{id:41,name:"Olive",rgb:[90,148,74],premium:!0},{id:42,name:"Light Olive",rgb:[132,197,115],premium:!0},{id:43,name:"Dark Cyan",rgb:[15,121,159],premium:!0},{id:44,name:"Light Cyan",rgb:[187,250,242],premium:!0},{id:45,name:"Light Blue",rgb:[125,199,255],premium:!0},{id:46,name:"Dark Indigo",rgb:[77,49,184],premium:!0},{id:47,name:"Dark Slate Blue",rgb:[74,66,132],premium:!0},{id:48,name:"Slate Blue",rgb:[122,113,196],premium:!0},{id:49,name:"Light Slate Blue",rgb:[181,174,241],premium:!0},{id:50,name:"Light Brown",rgb:[219,164,99],premium:!0},{id:51,name:"Dark Beige",rgb:[209,128,81],premium:!0},{id:52,name:"Light Beige",rgb:[255,197,165],premium:!0},{id:53,name:"Dark Peach",rgb:[155,82,73],premium:!0},{id:54,name:"Peach",rgb:[209,128,120],premium:!0},{id:55,name:"Light Peach",rgb:[250,182,164],premium:!0},{id:56,name:"Dark Tan",rgb:[123,99,82],premium:!0},{id:57,name:"Tan",rgb:[156,132,107],premium:!0},{id:58,name:"Dark Slate",rgb:[51,57,65],premium:!0},{id:59,name:"Slate",rgb:[109,117,141],premium:!0},{id:60,name:"Light Slate",rgb:[179,185,209],premium:!0},{id:61,name:"Dark Stone",rgb:[109,100,63],premium:!0},{id:62,name:"Stone",rgb:[148,140,107],premium:!0},{id:63,name:"Light Stone",rgb:[205,197,158],premium:!0}],mt=C.filter(e=>!e.premium).map(e=>e.id),ft=C.filter(e=>e.premium).map(e=>e.id),Se=new Map;for(let e of C)e.id!==0&&Se.set(e.rgb.join(","),e);function gt(e,t,n,o){if(o===0)return C[0];let a=Se.get(e+","+t+","+n);if(a)return a;let r=C[1],i=1/0;for(let c of C){if(c.id===0)continue;let l=(e-c.rgb[0])**2+(t-c.rgb[1])**2+(n-c.rgb[2])**2;l<i&&(i=l,r=c)}return r}Ee.exports={COLOR_PALETTE:C,matchColor:gt,FREE_IDS:mt,PREMIUM_IDS:ft}});var Fe=y((cn,Pe)=>{var{matchColor:Le}=ce(),ie=1e3,bt="https://backend.wplace.live/files/s0/tiles",j=new Map,se=document.createElement("canvas"),Te=se.getContext("2d",{willReadFrequently:!0});function De(e,t){return bt+"/"+e+"/"+t+".png"}function ht(e){return fetch(e,{credentials:"omit"}).then(t=>{if(t.status===404)return null;if(!t.ok)throw new Error("HTTP "+t.status+" for "+e);return t.blob()})}async function Ie(e,t){let n=e+","+t;if(j.has(n))return j.get(n);let o=await ht(De(e,t));if(o===null)return j.set(n,null),null;let a=await createImageBitmap(o);se.width=a.width,se.height=a.height,Te.drawImage(a,0,0);let r=Te.getImageData(0,0,a.width,a.height);return a.close&&a.close(),j.set(n,r),r}async function Ae(e,t,n,o){let a=await Ie(e,t);if(!a)return Le(0,0,0,0);let r=(o*a.width+n)*4;return Le(a.data[r],a.data[r+1],a.data[r+2],a.data[r+3])}async function yt(e,t,n,o,a){let r=[],i=e,c=n;for(;c<0;)c+=ie,i-=1;for(let l=0;l<a;l++){let d=await Ae(i,t,c,o);r.push(d.id),c++,c>=ie&&(c=0,i++)}return r}Pe.exports={TILE_SIZE:ie,tileUrl:De,getTileImageData:Ie,readPixel:Ae,readSequenceHorizontal:yt}});var Oe=y((sn,Be)=>{var{COLOR_PALETTE:Re}=ce();function xt(e){let t=document.createElement("canvas");t.width=e.length,t.height=1;let n=t.getContext("2d"),o=n.createImageData(e.length,1);for(let a=0;a<e.length;a++){let r=Re[e[a]]||Re[1];o.data[a*4]=r.rgb[0],o.data[a*4+1]=r.rgb[1],o.data[a*4+2]=r.rgb[2],o.data[a*4+3]=e[a]===0?0:255}return n.putImageData(o,0,0),new Promise((a,r)=>{t.toBlob(i=>i?a(i):r(new Error("toBlob failed")),"image/png")})}Be.exports={sequenceToPngBlob:xt}});var He=y((ln,Me)=>{var Ne="template-overlays",vt="wplace-templates",le="images";function qe(){return JSON.parse(localStorage.getItem(Ne)||"[]")}function wt(){let e=new URLSearchParams(location.search),t=parseFloat(e.get("lat"))||58.34,n=parseFloat(e.get("lng"))||14.03;return{north:t+.001,south:t-.001,west:n-.001,east:n+.001}}function kt(e,t){return new Promise((n,o)=>{let a=indexedDB.open(vt);a.onerror=()=>o(a.error),a.onsuccess=()=>{let r=a.result;if(!r.objectStoreNames.contains(le))return r.close(),o(new Error('IDB store "images" not found'));let i=r.transaction(le,"readwrite");i.objectStore(le).put(t,e),i.oncomplete=()=>{r.close(),n()},i.onerror=()=>{r.close(),o(i.error)}}})}async function Ct(e,t,n={}){let o=await createImageBitmap(e),a=o.width,r=o.height;o.close&&o.close();let i=crypto.randomUUID();await kt(i,e);let c={id:i,name:t,bounds:n.bounds||wt(),originalWidth:a,originalHeight:r,opacity:n.opacity!==void 0?n.opacity:.5,visible:!0,locked:!1,colorMetric:"lab",dithering:!1,useLegacyColors:!1,colorPaletteMode:"all",order:0,hasPlaced:!1,updatedAt:Date.now()},l=()=>{let d=qe();d.some(g=>g.id===i)||(d.push(c),localStorage.setItem(Ne,JSON.stringify(d)))};return l(),window.addEventListener("pagehide",l),c}Me.exports={injectTemplate:Ct,listOverlays:qe}});var Ke=y((dn,We)=>{var{ALPHABET:St}=M(),{encodeV1:Et}=Q(),{encodeV2:Lt}=re(),_e="colorcoder-gui-state",P={x:20,y:20,collapsed:!1,tab:"encode",enc:{proto:2,mode:0,free:1},settings:{autoReload:!1,consoleLogs:!0}};function Tt(){try{let e=Object.assign({},P,JSON.parse(localStorage.getItem(_e)||"{}"));return e.enc=Object.assign({},P.enc,e.enc),e.settings=Object.assign({},P.settings,e.settings),e}catch{let t=Object.assign({},P);return t.enc=Object.assign({},P.enc),t.settings=Object.assign({},P.settings),t}}function x(e){localStorage.setItem(_e,JSON.stringify(e))}var s=Tt(),u,k,f,S,O=null,m,v,w,N,_,$,z,U,Ve,G,W,je,de=null;function Dt(){return`
+(() => {
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __commonJS = (cb, mod) => function __require() {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  };
+
+  // src/core/protocol.js
+  var require_protocol = __commonJS({
+    "src/core/protocol.js"(exports, module) {
+      var ALPHABET = `abcdefghijklmnopqrstuvwxyz0123456789 .!?-_:;'"()[]{}@#$%&/=+<>`;
+      function djb2Checksum5(binaryString) {
+        let hash = 5381;
+        for (let i = 0; i < binaryString.length; i++) {
+          hash = (hash << 5) + hash + binaryString.charCodeAt(i);
+          hash = hash | 0;
+        }
+        return hash & 31;
+      }
+      function djb2Checksum6(binaryString) {
+        let hash = 5381;
+        for (let i = 0; i < binaryString.length; i++) {
+          hash = (hash << 5) + hash + binaryString.charCodeAt(i);
+          hash = hash | 0;
+        }
+        return hash & 63;
+      }
+      var MAX_PAYLOAD = 1023;
+      var START_MARKER = 1;
+      var VERSION1 = 0;
+      function textToPayloadLiteV1(text) {
+        const payload = [];
+        for (const ch of text) {
+          const idx = ALPHABET.indexOf(ch);
+          if (idx === -1) {
+            console.warn('Character not in alphabet: "' + ch + '"');
+            return null;
+          }
+          payload.push(idx);
+        }
+        return payload;
+      }
+      function payloadToTextLiteV1(payload) {
+        let text = "";
+        let badChars = false;
+        for (const val of payload) {
+          if (val < 0 || val >= ALPHABET.length) {
+            badChars = true;
+            text += "?";
+            continue;
+          }
+          text += ALPHABET[val];
+        }
+        return { text, badChars };
+      }
+      function textToPayloadFullV1(text) {
+        const bytes = new TextEncoder().encode(text);
+        const payload = [];
+        let buffer = 0, bits = 0;
+        for (const byte of bytes) {
+          buffer = buffer << 8 | byte;
+          bits += 8;
+          while (bits >= 6) {
+            bits -= 6;
+            payload.push(buffer >> bits & 63);
+          }
+        }
+        if (bits > 0)
+          payload.push(buffer << 6 - bits & 63);
+        return payload;
+      }
+      function payloadToTextFullV1(payload) {
+        const bytes = [];
+        let buffer = 0, bits = 0;
+        for (const val of payload) {
+          buffer = buffer << 6 | val;
+          bits += 6;
+          while (bits >= 8) {
+            bits -= 8;
+            bytes.push(buffer >> bits & 255);
+          }
+        }
+        const badPadding = bits > 0 && (buffer & (1 << bits) - 1) !== 0;
+        const text = new TextDecoder().decode(new Uint8Array(bytes));
+        return { text, badPadding };
+      }
+      function packHeader(h_version, mode, length, checksum) {
+        const headerInt = h_version << 16 | mode << 15 | length << 5 | checksum;
+        return [headerInt >> 12 & 63, headerInt >> 6 & 63, headerInt & 63];
+      }
+      function unpackHeader2(h1, h2, h3) {
+        const headerInt = h1 << 12 | h2 << 6 | h3;
+        return {
+          version: headerInt >> 16 & 3,
+          mode: headerInt >> 15 & 1,
+          length: headerInt >> 5 & 1023,
+          checksum: headerInt & 31
+        };
+      }
+      function checksumFor(version, mode, length, payload) {
+        const headerBin = version.toString(2).padStart(2, "0") + mode.toString(2).padStart(1, "0") + length.toString(2).padStart(10, "0");
+        const payloadBin = payload.map((v) => v.toString(2).padStart(6, "0")).join("");
+        return djb2Checksum5(headerBin + payloadBin);
+      }
+      function encodeV12(text, mode) {
+        const payload = mode === 0 ? textToPayloadLiteV1(text) : textToPayloadFullV1(text);
+        if (!payload)
+          return null;
+        if (payload.length > MAX_PAYLOAD) {
+          console.warn("Payload too long: " + payload.length + " > " + MAX_PAYLOAD + " pixels");
+          return null;
+        }
+        const checksum = checksumFor(VERSION1, mode, payload.length, payload);
+        const header = packHeader(VERSION1, mode, payload.length, checksum);
+        return {
+          version: VERSION1,
+          mode,
+          length: payload.length,
+          checksum,
+          header,
+          payload,
+          fullSequence: [START_MARKER].concat(header, payload),
+          text
+        };
+      }
+      function decodeV12(sequence) {
+        if (!sequence || sequence.length < 4) {
+          console.warn("Sequence too short for V1 (need >= 4 pixels)");
+          return null;
+        }
+        const startMarkerValid = sequence[0] === START_MARKER;
+        if (!startMarkerValid) {
+          console.warn("Invalid start marker: expected " + START_MARKER + ", got " + sequence[0]);
+        }
+        const { version, mode, length, checksum } = unpackHeader2(sequence[1], sequence[2], sequence[3]);
+        if (version !== VERSION1) {
+          console.warn("Unknown header version " + version + ". This codec only understands V" + VERSION1 + ".");
+          return { version, startMarkerValid, valid: false, unknownVersion: true, text: null };
+        }
+        const available = sequence.length - 4;
+        const truncated = available < length;
+        if (truncated) {
+          console.warn("Truncated message: header says " + length + " px but only " + available + " available.");
+        }
+        const payload = sequence.slice(4, 4 + length);
+        const computedChecksum = checksumFor(version, mode, payload.length, payload);
+        const valid = computedChecksum === checksum && startMarkerValid && !truncated;
+        let text, badChars = false, badPadding = false;
+        if (mode === 0) {
+          const r = payloadToTextLiteV1(payload);
+          text = r.text;
+          badChars = r.badChars;
+        } else {
+          const r = payloadToTextFullV1(payload);
+          text = r.text;
+          badPadding = r.badPadding;
+        }
+        if (badChars)
+          console.warn('Payload contains values outside Lite alphabet; replaced with "?".');
+        if (badPadding)
+          console.warn("Non-zero padding bits at end of Full payload (possible corruption).");
+        return {
+          text,
+          version,
+          mode,
+          length,
+          storedChecksum: checksum,
+          computedChecksum,
+          valid,
+          startMarkerValid,
+          truncated,
+          badChars,
+          badPadding
+        };
+      }
+      var SYNC = [26, 27, 24, 21];
+      var SYNC_LEN = SYNC.length;
+      var HEADER_LEN = 4;
+      var PREFIX_LEN2 = SYNC_LEN + HEADER_LEN;
+      var VERSION2 = 2;
+      var SPACE_INDEX = ALPHABET.indexOf(" ");
+      function charToIdLite(ch) {
+        const idx = ALPHABET.indexOf(ch);
+        if (idx === -1)
+          return -1;
+        if (idx === SPACE_INDEX)
+          return 0;
+        return idx < SPACE_INDEX ? idx + 1 : idx;
+      }
+      function idToCharLite(id) {
+        let idx;
+        if (id === 0)
+          idx = SPACE_INDEX;
+        else if (id <= SPACE_INDEX)
+          idx = id - 1;
+        else
+          idx = id;
+        const ch = ALPHABET[idx];
+        return ch !== void 0 ? ch : "?";
+      }
+      function packBits(values, bitsPerValue, bitsPerPixel) {
+        const vMask = (1 << bitsPerValue) - 1;
+        const pMask = (1 << bitsPerPixel) - 1;
+        const pixels = [];
+        let buffer = 0, bits = 0;
+        for (const v of values) {
+          buffer = buffer << bitsPerValue | v & vMask;
+          bits += bitsPerValue;
+          while (bits >= bitsPerPixel) {
+            bits -= bitsPerPixel;
+            pixels.push(buffer >> bits & pMask);
+          }
+        }
+        if (bits > 0)
+          pixels.push(buffer << bitsPerPixel - bits & pMask);
+        return pixels;
+      }
+      function unpackBits(pixels, bitsPerPixel, bitsPerValue) {
+        const pMask = (1 << bitsPerPixel) - 1;
+        const vMask = (1 << bitsPerValue) - 1;
+        const values = [];
+        let buffer = 0, bits = 0;
+        for (const p of pixels) {
+          buffer = buffer << bitsPerPixel | p & pMask;
+          bits += bitsPerPixel;
+          while (bits >= bitsPerValue) {
+            bits -= bitsPerValue;
+            values.push(buffer >> bits & vMask);
+          }
+        }
+        const leftover = bits;
+        const padBits = leftover > 0 ? buffer & (1 << leftover) - 1 : 0;
+        return { values, leftover, padBits };
+      }
+      function textToPayloadV2(text, mode, free) {
+        if (mode === 0) {
+          if (!free) {
+            const pixels = [];
+            for (const ch of text) {
+              const id = charToIdLite(ch);
+              if (id === -1) {
+                console.warn('Character not in alphabet: "' + ch + '"');
+                return null;
+              }
+              pixels.push(id);
+            }
+            return pixels;
+          }
+          const indices = [];
+          for (const ch of text) {
+            const idx = ALPHABET.indexOf(ch);
+            if (idx === -1) {
+              console.warn('Character not in alphabet: "' + ch + '"');
+              return null;
+            }
+            indices.push(idx);
+          }
+          return packBits(indices, 6, 5);
+        }
+        const bytes = Array.from(new TextEncoder().encode(text));
+        return packBits(bytes, 8, free ? 5 : 6);
+      }
+      function payloadToTextV2(payload, mode, free) {
+        let badChars = false, badPadding = false;
+        if (mode === 0) {
+          if (!free) {
+            let text3 = "";
+            for (const id of payload) {
+              const ch = idToCharLite(id);
+              if (ch === "?")
+                badChars = true;
+              text3 += ch;
+            }
+            return { text: text3, badChars, badPadding };
+          }
+          const r2 = unpackBits(payload, 5, 6);
+          badPadding = r2.padBits !== 0;
+          let text2 = "";
+          for (const v of r2.values) {
+            if (v < 0 || v >= ALPHABET.length) {
+              badChars = true;
+              text2 += "?";
+              continue;
+            }
+            text2 += ALPHABET[v];
+          }
+          return { text: text2, badChars, badPadding };
+        }
+        const r = unpackBits(payload, free ? 5 : 6, 8);
+        badPadding = r.padBits !== 0;
+        const text = new TextDecoder().decode(new Uint8Array(r.values));
+        return { text, badChars, badPadding };
+      }
+      function packHeaderV2(mode, free, length, checksum) {
+        const h = (mode & 1) << 19 | (free & 1) << 18 | (length & 1023) << 8 | (checksum & 63) << 2;
+        return [h >> 15 & 31, h >> 10 & 31, h >> 5 & 31, h & 31];
+      }
+      function unpackHeaderV22(p0, p1, p2, p3) {
+        const badHeaderColors = p0 > 31 || p1 > 31 || p2 > 31 || p3 > 31;
+        const h = (p0 & 31) << 15 | (p1 & 31) << 10 | (p2 & 31) << 5 | p3 & 31;
+        return {
+          mode: h >> 19 & 1,
+          free: h >> 18 & 1,
+          length: h >> 8 & 1023,
+          checksum: h >> 2 & 63,
+          reserved: h & 3,
+          badHeaderColors
+        };
+      }
+      function checksumForV2(mode, free, length, payload) {
+        const bpp = free ? 5 : 6;
+        const headerBin = (mode & 1).toString(2) + (free & 1).toString(2) + length.toString(2).padStart(10, "0");
+        const payloadBin = payload.map((v) => v.toString(2).padStart(bpp, "0")).join("");
+        return djb2Checksum6(headerBin + payloadBin);
+      }
+      function encodeV22(text, mode, free) {
+        mode = mode ? 1 : 0;
+        free = free ? 1 : 0;
+        const payload = textToPayloadV2(text, mode, free);
+        if (!payload)
+          return null;
+        if (payload.length > MAX_PAYLOAD) {
+          console.warn("Payload too long: " + payload.length + " > " + MAX_PAYLOAD + " pixels");
+          return null;
+        }
+        const checksum = checksumForV2(mode, free, payload.length, payload);
+        const header = packHeaderV2(mode, free, payload.length, checksum);
+        return {
+          version: VERSION2,
+          mode,
+          free,
+          length: payload.length,
+          checksum,
+          header,
+          payload,
+          fullSequence: SYNC.concat(header, payload),
+          text
+        };
+      }
+      function decodeV22(sequence) {
+        if (!sequence || sequence.length < PREFIX_LEN2) {
+          console.warn("Sequence too short for V2 (need >= " + PREFIX_LEN2 + " pixels)");
+          return null;
+        }
+        let syncValid = true;
+        for (let i = 0; i < SYNC_LEN; i++) {
+          if (sequence[i] !== SYNC[i]) {
+            syncValid = false;
+            break;
+          }
+        }
+        if (!syncValid)
+          console.warn("Invalid V2 sync pattern.");
+        const hdr = unpackHeaderV22(sequence[4], sequence[5], sequence[6], sequence[7]);
+        const mode = hdr.mode, free = hdr.free, length = hdr.length, checksum = hdr.checksum, reserved = hdr.reserved, badHeaderColors = hdr.badHeaderColors;
+        const available = sequence.length - PREFIX_LEN2;
+        const truncated = available < length;
+        if (truncated) {
+          console.warn("Truncated message: header says " + length + " px but only " + available + " available.");
+        }
+        const payload = sequence.slice(PREFIX_LEN2, PREFIX_LEN2 + length);
+        const computedChecksum = checksumForV2(mode, free, payload.length, payload);
+        const valid = syncValid && !truncated && computedChecksum === checksum;
+        const r = payloadToTextV2(payload, mode, free);
+        if (r.badChars)
+          console.warn('Payload contains values outside Lite alphabet; replaced with "?".');
+        if (r.badPadding)
+          console.warn("Non-zero padding bits at end of payload (possible corruption).");
+        if (badHeaderColors)
+          console.warn("Header contains non-free color ids (possible corruption).");
+        if (reserved !== 0)
+          console.warn("Reserved header bits set (" + reserved + "); newer protocol flags?");
+        return {
+          text: r.text,
+          version: VERSION2,
+          mode,
+          free,
+          length,
+          storedChecksum: checksum,
+          computedChecksum,
+          valid,
+          syncValid,
+          truncated,
+          badChars: r.badChars,
+          badPadding: r.badPadding,
+          badHeaderColors,
+          reserved
+        };
+      }
+      function findSyncOffset2(ids) {
+        if (!ids || ids.length < SYNC_LEN)
+          return -1;
+        for (let off = 0; off <= ids.length - SYNC_LEN; off++) {
+          let ok = true;
+          for (let i = 0; i < SYNC_LEN; i++) {
+            if (ids[off + i] !== SYNC[i]) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok)
+            return off;
+        }
+        return -1;
+      }
+      module.exports = {
+        // shared
+        ALPHABET,
+        MAX_PAYLOAD,
+        djb2Checksum5,
+        djb2Checksum6,
+        // V1
+        START_MARKER,
+        VERSION1,
+        VERSION: VERSION1,
+        encodeV1: encodeV12,
+        decodeV1: decodeV12,
+        packHeader,
+        unpackHeader: unpackHeader2,
+        checksumFor,
+        // V2
+        SYNC,
+        SYNC_LEN,
+        HEADER_LEN,
+        PREFIX_LEN: PREFIX_LEN2,
+        VERSION2,
+        encodeV2: encodeV22,
+        decodeV2: decodeV22,
+        packHeaderV2,
+        unpackHeaderV2: unpackHeaderV22,
+        checksumForV2,
+        packBits,
+        unpackBits,
+        charToIdLite,
+        idToCharLite,
+        findSyncOffset: findSyncOffset2
+      };
+    }
+  });
+
+  // src/core/palette.js
+  var require_palette = __commonJS({
+    "src/core/palette.js"(exports, module) {
+      var COLOR_PALETTE = [
+        { id: 0, name: "Transparent", rgb: [0, 0, 0], premium: false },
+        { id: 1, name: "Black", rgb: [0, 0, 0], premium: false },
+        { id: 2, name: "Dark Gray", rgb: [60, 60, 60], premium: false },
+        { id: 3, name: "Gray", rgb: [120, 120, 120], premium: false },
+        { id: 4, name: "Light Gray", rgb: [210, 210, 210], premium: false },
+        { id: 5, name: "White", rgb: [255, 255, 255], premium: false },
+        { id: 6, name: "Deep Red", rgb: [96, 0, 24], premium: false },
+        { id: 7, name: "Red", rgb: [237, 28, 36], premium: false },
+        { id: 8, name: "Orange", rgb: [255, 127, 39], premium: false },
+        { id: 9, name: "Gold", rgb: [246, 170, 9], premium: false },
+        { id: 10, name: "Yellow", rgb: [249, 221, 59], premium: false },
+        { id: 11, name: "Light Yellow", rgb: [255, 250, 188], premium: false },
+        { id: 12, name: "Dark Green", rgb: [14, 185, 104], premium: false },
+        { id: 13, name: "Green", rgb: [19, 230, 123], premium: false },
+        { id: 14, name: "Light Green", rgb: [135, 255, 94], premium: false },
+        { id: 15, name: "Dark Teal", rgb: [12, 129, 110], premium: false },
+        { id: 16, name: "Teal", rgb: [16, 174, 166], premium: false },
+        { id: 17, name: "Light Teal", rgb: [19, 225, 190], premium: false },
+        { id: 18, name: "Dark Blue", rgb: [40, 80, 158], premium: false },
+        { id: 19, name: "Blue", rgb: [64, 147, 228], premium: false },
+        { id: 20, name: "Cyan", rgb: [96, 247, 242], premium: false },
+        { id: 21, name: "Indigo", rgb: [107, 80, 246], premium: false },
+        { id: 22, name: "Light Indigo", rgb: [153, 177, 251], premium: false },
+        { id: 23, name: "Dark Purple", rgb: [120, 12, 153], premium: false },
+        { id: 24, name: "Purple", rgb: [170, 56, 185], premium: false },
+        { id: 25, name: "Light Purple", rgb: [224, 159, 249], premium: false },
+        { id: 26, name: "Dark Pink", rgb: [203, 0, 122], premium: false },
+        { id: 27, name: "Pink", rgb: [236, 31, 128], premium: false },
+        { id: 28, name: "Light Pink", rgb: [243, 141, 169], premium: false },
+        { id: 29, name: "Dark Brown", rgb: [104, 70, 52], premium: false },
+        { id: 30, name: "Brown", rgb: [149, 104, 42], premium: false },
+        { id: 31, name: "Beige", rgb: [248, 178, 119], premium: false },
+        { id: 32, name: "Medium Gray", rgb: [170, 170, 170], premium: true },
+        { id: 33, name: "Dark Red", rgb: [165, 14, 30], premium: true },
+        { id: 34, name: "Light Red", rgb: [250, 128, 114], premium: true },
+        { id: 35, name: "Dark Orange", rgb: [228, 92, 26], premium: true },
+        { id: 36, name: "Light Tan", rgb: [214, 181, 148], premium: true },
+        { id: 37, name: "Dark Goldenrod", rgb: [156, 132, 49], premium: true },
+        { id: 38, name: "Goldenrod", rgb: [197, 173, 49], premium: true },
+        { id: 39, name: "Light Goldenrod", rgb: [232, 212, 95], premium: true },
+        { id: 40, name: "Dark Olive", rgb: [74, 107, 58], premium: true },
+        { id: 41, name: "Olive", rgb: [90, 148, 74], premium: true },
+        { id: 42, name: "Light Olive", rgb: [132, 197, 115], premium: true },
+        { id: 43, name: "Dark Cyan", rgb: [15, 121, 159], premium: true },
+        { id: 44, name: "Light Cyan", rgb: [187, 250, 242], premium: true },
+        { id: 45, name: "Light Blue", rgb: [125, 199, 255], premium: true },
+        { id: 46, name: "Dark Indigo", rgb: [77, 49, 184], premium: true },
+        { id: 47, name: "Dark Slate Blue", rgb: [74, 66, 132], premium: true },
+        { id: 48, name: "Slate Blue", rgb: [122, 113, 196], premium: true },
+        { id: 49, name: "Light Slate Blue", rgb: [181, 174, 241], premium: true },
+        { id: 50, name: "Light Brown", rgb: [219, 164, 99], premium: true },
+        { id: 51, name: "Dark Beige", rgb: [209, 128, 81], premium: true },
+        { id: 52, name: "Light Beige", rgb: [255, 197, 165], premium: true },
+        { id: 53, name: "Dark Peach", rgb: [155, 82, 73], premium: true },
+        { id: 54, name: "Peach", rgb: [209, 128, 120], premium: true },
+        { id: 55, name: "Light Peach", rgb: [250, 182, 164], premium: true },
+        { id: 56, name: "Dark Tan", rgb: [123, 99, 82], premium: true },
+        { id: 57, name: "Tan", rgb: [156, 132, 107], premium: true },
+        { id: 58, name: "Dark Slate", rgb: [51, 57, 65], premium: true },
+        { id: 59, name: "Slate", rgb: [109, 117, 141], premium: true },
+        { id: 60, name: "Light Slate", rgb: [179, 185, 209], premium: true },
+        { id: 61, name: "Dark Stone", rgb: [109, 100, 63], premium: true },
+        { id: 62, name: "Stone", rgb: [148, 140, 107], premium: true },
+        { id: 63, name: "Light Stone", rgb: [205, 197, 158], premium: true }
+      ];
+      var FREE_IDS = COLOR_PALETTE.filter((c) => !c.premium).map((c) => c.id);
+      var PREMIUM_IDS = COLOR_PALETTE.filter((c) => c.premium).map((c) => c.id);
+      var EXACT = /* @__PURE__ */ new Map();
+      for (const c of COLOR_PALETTE) {
+        if (c.id === 0)
+          continue;
+        EXACT.set(c.rgb.join(","), c);
+      }
+      function matchColor(r, g, b, a) {
+        if (a === 0)
+          return COLOR_PALETTE[0];
+        const exact = EXACT.get(r + "," + g + "," + b);
+        if (exact)
+          return exact;
+        let best = COLOR_PALETTE[1];
+        let bestD = Infinity;
+        for (const c of COLOR_PALETTE) {
+          if (c.id === 0)
+            continue;
+          const d = (r - c.rgb[0]) ** 2 + (g - c.rgb[1]) ** 2 + (b - c.rgb[2]) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            best = c;
+          }
+        }
+        return best;
+      }
+      module.exports = { COLOR_PALETTE, matchColor, FREE_IDS, PREMIUM_IDS };
+    }
+  });
+
+  // src/core/wplace.js
+  var require_wplace = __commonJS({
+    "src/core/wplace.js"(exports, module) {
+      var { matchColor } = require_palette();
+      var TILE_SIZE = 1e3;
+      var TILE_BASE_URL = "https://backend.wplace.live/files/s0/tiles";
+      var tileCache = /* @__PURE__ */ new Map();
+      var scratch = document.createElement("canvas");
+      var scratchCtx = scratch.getContext("2d", { willReadFrequently: true });
+      function tileUrl(tileX, tileY) {
+        return TILE_BASE_URL + "/" + tileX + "/" + tileY + ".png";
+      }
+      function fetchTileBlob(url) {
+        return fetch(url, { credentials: "omit" }).then((res) => {
+          if (res.status === 404)
+            return null;
+          if (!res.ok)
+            throw new Error("HTTP " + res.status + " for " + url);
+          return res.blob();
+        });
+      }
+      async function getTileImageData(tileX, tileY) {
+        const key = tileX + "," + tileY;
+        if (tileCache.has(key))
+          return tileCache.get(key);
+        const blob = await fetchTileBlob(tileUrl(tileX, tileY));
+        if (blob === null) {
+          tileCache.set(key, null);
+          return null;
+        }
+        const bitmap = await createImageBitmap(blob);
+        scratch.width = bitmap.width;
+        scratch.height = bitmap.height;
+        scratchCtx.drawImage(bitmap, 0, 0);
+        const imageData = scratchCtx.getImageData(0, 0, bitmap.width, bitmap.height);
+        if (bitmap.close)
+          bitmap.close();
+        tileCache.set(key, imageData);
+        return imageData;
+      }
+      async function readPixel2(tileX, tileY, px, py) {
+        const imageData = await getTileImageData(tileX, tileY);
+        if (!imageData)
+          return matchColor(0, 0, 0, 0);
+        const i = (py * imageData.width + px) * 4;
+        return matchColor(
+          imageData.data[i],
+          imageData.data[i + 1],
+          imageData.data[i + 2],
+          imageData.data[i + 3]
+        );
+      }
+      async function readSequenceHorizontal2(startTileX, startTileY, startPx, startPy, length) {
+        const ids = [];
+        let curTileX = startTileX;
+        let curPx = startPx;
+        while (curPx < 0) {
+          curPx += TILE_SIZE;
+          curTileX -= 1;
+        }
+        for (let i = 0; i < length; i++) {
+          const color = await readPixel2(curTileX, startTileY, curPx, startPy);
+          ids.push(color.id);
+          curPx++;
+          if (curPx >= TILE_SIZE) {
+            curPx = 0;
+            curTileX++;
+          }
+        }
+        return ids;
+      }
+      module.exports = {
+        TILE_SIZE,
+        tileUrl,
+        getTileImageData,
+        readPixel: readPixel2,
+        readSequenceHorizontal: readSequenceHorizontal2
+      };
+    }
+  });
+
+  // src/core/render.js
+  var require_render = __commonJS({
+    "src/core/render.js"(exports, module) {
+      var { COLOR_PALETTE } = require_palette();
+      function sequenceToPngBlob2(sequence) {
+        const canvas = document.createElement("canvas");
+        canvas.width = sequence.length;
+        canvas.height = 1;
+        const ctx = canvas.getContext("2d");
+        const img = ctx.createImageData(sequence.length, 1);
+        for (let x = 0; x < sequence.length; x++) {
+          const c = COLOR_PALETTE[sequence[x]] || COLOR_PALETTE[1];
+          img.data[x * 4] = c.rgb[0];
+          img.data[x * 4 + 1] = c.rgb[1];
+          img.data[x * 4 + 2] = c.rgb[2];
+          img.data[x * 4 + 3] = sequence[x] === 0 ? 0 : 255;
+        }
+        ctx.putImageData(img, 0, 0);
+        return new Promise((resolve, reject) => {
+          canvas.toBlob((b) => b ? resolve(b) : reject(new Error("toBlob failed")), "image/png");
+        });
+      }
+      module.exports = { sequenceToPngBlob: sequenceToPngBlob2 };
+    }
+  });
+
+  // src/core/templates.js
+  var require_templates = __commonJS({
+    "src/core/templates.js"(exports, module) {
+      var LS_KEY = "template-overlays";
+      var DB_NAME = "wplace-templates";
+      var STORE = "images";
+      function listOverlays() {
+        return JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+      }
+      function seedBounds() {
+        const q = new URLSearchParams(location.search);
+        const lat = parseFloat(q.get("lat")) || 58.34;
+        const lng = parseFloat(q.get("lng")) || 14.03;
+        return { north: lat + 1e-3, south: lat - 1e-3, west: lng - 1e-3, east: lng + 1e-3 };
+      }
+      function putImageBlob(id, blob) {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open(DB_NAME);
+          req.onerror = () => reject(req.error);
+          req.onsuccess = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(STORE)) {
+              db.close();
+              return reject(new Error('IDB store "images" not found'));
+            }
+            const tx = db.transaction(STORE, "readwrite");
+            tx.objectStore(STORE).put(blob, id);
+            tx.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            tx.onerror = () => {
+              db.close();
+              reject(tx.error);
+            };
+          };
+        });
+      }
+      async function injectTemplate2(blob, name, opts = {}) {
+        const bitmap = await createImageBitmap(blob);
+        const width = bitmap.width, height = bitmap.height;
+        if (bitmap.close)
+          bitmap.close();
+        const id = crypto.randomUUID();
+        await putImageBlob(id, blob);
+        const entry = {
+          id,
+          name,
+          bounds: opts.bounds || seedBounds(),
+          originalWidth: width,
+          originalHeight: height,
+          opacity: opts.opacity !== void 0 ? opts.opacity : 0.5,
+          visible: true,
+          locked: false,
+          colorMetric: "lab",
+          dithering: false,
+          useLegacyColors: false,
+          colorPaletteMode: "all",
+          order: 0,
+          hasPlaced: false,
+          updatedAt: Date.now()
+        };
+        const merge = () => {
+          const cur = listOverlays();
+          if (!cur.some((o) => o.id === id)) {
+            cur.push(entry);
+            localStorage.setItem(LS_KEY, JSON.stringify(cur));
+          }
+        };
+        merge();
+        window.addEventListener("pagehide", merge);
+        return entry;
+      }
+      module.exports = { injectTemplate: injectTemplate2, listOverlays };
+    }
+  });
+
+  // src/core/gui.js
+  var require_gui = __commonJS({
+    "src/core/gui.js"(exports, module) {
+      var { ALPHABET, encodeV1: encodeV12, encodeV2: encodeV22 } = require_protocol();
+      var LS_KEY = "colorcoder-gui-state";
+      var defaultState = {
+        x: 20,
+        y: 20,
+        collapsed: false,
+        tab: "encode",
+        enc: { proto: 2, mode: 0, free: 1 },
+        settings: { autoReload: false, consoleLogs: true }
+      };
+      function loadState() {
+        try {
+          const s = Object.assign({}, defaultState, JSON.parse(localStorage.getItem(LS_KEY) || "{}"));
+          s.enc = Object.assign({}, defaultState.enc, s.enc);
+          s.settings = Object.assign({}, defaultState.settings, s.settings);
+          return s;
+        } catch (e) {
+          const s = Object.assign({}, defaultState);
+          s.enc = Object.assign({}, defaultState.enc);
+          s.settings = Object.assign({}, defaultState.settings);
+          return s;
+        }
+      }
+      function saveState(state2) {
+        localStorage.setItem(LS_KEY, JSON.stringify(state2));
+      }
+      var state = loadState();
+      var panel;
+      var header;
+      var body;
+      var statusEl;
+      var statusTimer = null;
+      var encodePane;
+      var decodePane;
+      var settingsPane;
+      var encodeBtn;
+      var textArea;
+      var modeSelect;
+      var protoSelect;
+      var palSelect;
+      var palRow;
+      var liteWarn;
+      var previewEl;
+      var hintEl;
+      var onEncodeCb = null;
+      function css() {
+        return `
         #cc-panel {
             position: fixed; z-index: 999999;
             width: 320px; background: #1a1a1d; color: #e0e0e0;
@@ -31,7 +803,7 @@
             font-size: 14px; margin-left: 8px; padding: 0 4px;
         }
         #cc-header .btns button:hover { color: #fff; }
-        #cc-body { padding: 10px; display: ${s.collapsed?"none":"block"}; }
+        #cc-body { padding: 10px; display: ${state.collapsed ? "none" : "block"}; }
         .cc-tabs { display: flex; margin-bottom: 10px; border-bottom: 1px solid #444; }
         .cc-tabs button {
             background: transparent; border: none; color: #888; padding: 4px 10px;
@@ -67,17 +839,40 @@
             white-space: pre-wrap;
         }
         .cc-shield { position: fixed; inset: 0; z-index: 999998; cursor: move; }
-    `}function It(){let e=document.createElement("style");e.textContent=Dt(),document.head.appendChild(e),u=document.createElement("div"),u.id="cc-panel",u.style.left=s.x+"px",u.style.top=s.y+"px",k=document.createElement("div"),k.id="cc-header",k.innerHTML=`
+    `;
+      }
+      function createPanel() {
+        const style = document.createElement("style");
+        style.textContent = css();
+        document.head.appendChild(style);
+        panel = document.createElement("div");
+        panel.id = "cc-panel";
+        panel.style.left = state.x + "px";
+        panel.style.top = state.y + "px";
+        header = document.createElement("div");
+        header.id = "cc-header";
+        header.innerHTML = `
         <span class="title">COLORCODER</span>
         <span class="btns">
             <button id="cc-collapse" title="Collapse">_</button>
             <button id="cc-close" title="Hide (Alt+C)">x</button>
         </span>
-    `,u.appendChild(k),f=document.createElement("div"),f.id="cc-body";let t=document.createElement("div");t.className="cc-tabs",t.innerHTML=`
-        <button data-tab="encode" class="${s.tab==="encode"?"active":""}">Encode</button>
-        <button data-tab="decode" class="${s.tab==="decode"?"active":""}">Decode</button>
-        <button data-tab="settings" class="${s.tab==="settings"?"active":""}">Settings</button>
-    `,f.appendChild(t),m=document.createElement("div"),m.className=`cc-pane ${s.tab==="encode"?"active":""}`,m.dataset.tab="encode",m.innerHTML=`
+    `;
+        panel.appendChild(header);
+        body = document.createElement("div");
+        body.id = "cc-body";
+        const tabs = document.createElement("div");
+        tabs.className = "cc-tabs";
+        tabs.innerHTML = `
+        <button data-tab="encode" class="${state.tab === "encode" ? "active" : ""}">Encode</button>
+        <button data-tab="decode" class="${state.tab === "decode" ? "active" : ""}">Decode</button>
+        <button data-tab="settings" class="${state.tab === "settings" ? "active" : ""}">Settings</button>
+    `;
+        body.appendChild(tabs);
+        encodePane = document.createElement("div");
+        encodePane.className = `cc-pane ${state.tab === "encode" ? "active" : ""}`;
+        encodePane.dataset.tab = "encode";
+        encodePane.innerHTML = `
         <div class="cc-row">
             <label>Protocol</label>
             <select id="cc-proto">
@@ -110,7 +905,12 @@
         </div>
         <button id="cc-encode" class="cc-btn">Create Wplace Overlay</button>
         <div id="cc-action" style="margin-top:6px;"></div>
-    `,f.appendChild(m),v=document.createElement("div"),v.className=`cc-pane ${s.tab==="decode"?"active":""}`,v.dataset.tab="decode",v.innerHTML=`
+    `;
+        body.appendChild(encodePane);
+        decodePane = document.createElement("div");
+        decodePane.className = `cc-pane ${state.tab === "decode" ? "active" : ""}`;
+        decodePane.dataset.tab = "decode";
+        decodePane.innerHTML = `
         <div class="cc-row" style="color:#888; font-size:11px; margin-bottom:10px;">
             Alt+Click any sync pixel: V2 purple row or V1 black marker.
         </div>
@@ -118,18 +918,432 @@
             No messages decoded yet.
         </div>
         <div id="cc-decode-content" style="display:none;"></div>
-    `,f.appendChild(v),w=document.createElement("div"),w.className=`cc-pane ${s.tab==="settings"?"active":""}`,w.dataset.tab="settings",w.innerHTML=`
+    `;
+        body.appendChild(decodePane);
+        settingsPane = document.createElement("div");
+        settingsPane.className = `cc-pane ${state.tab === "settings" ? "active" : ""}`;
+        settingsPane.dataset.tab = "settings";
+        settingsPane.innerHTML = `
         <div class="cc-row">
-            <label><input type="checkbox" id="cc-autoreload" ${s.settings.autoReload?"checked":""}> Auto reload after overlay injection</label>
+            <label><input type="checkbox" id="cc-autoreload" ${state.settings.autoReload ? "checked" : ""}> Auto reload after overlay injection</label>
         </div>
         <div class="cc-row">
-            <label><input type="checkbox" id="cc-logs" ${s.settings.consoleLogs?"checked":""}> Show console logs</label>
+            <label><input type="checkbox" id="cc-logs" ${state.settings.consoleLogs ? "checked" : ""}> Show console logs</label>
         </div>
         <button id="cc-reset" class="cc-btn" style="background:#555; color:#fff;">Reset Panel Position</button>
-    `,f.appendChild(w),S=document.createElement("div"),S.className="cc-status",f.appendChild(S),u.appendChild(f),document.documentElement.appendChild(u),At()}function At(){f.querySelectorAll(".cc-tabs button").forEach(n=>{n.addEventListener("click",()=>{s.tab=n.dataset.tab,f.querySelectorAll(".cc-tabs button").forEach(o=>o.classList.remove("active")),n.classList.add("active"),f.querySelectorAll(".cc-pane").forEach(o=>o.classList.remove("active")),f.querySelector(`.cc-pane[data-tab="${s.tab}"]`).classList.add("active"),x(s)})}),k.querySelector("#cc-collapse").addEventListener("click",()=>{s.collapsed=!s.collapsed,f.style.display=s.collapsed?"none":"block",k.querySelector("#cc-collapse").textContent=s.collapsed?"+":"_",x(s)}),k.querySelector("#cc-close").addEventListener("click",()=>{u.style.display="none"});let e=null;k.addEventListener("mousedown",n=>{if(n.target.closest("button"))return;let o=document.createElement("div");o.className="cc-shield",document.body.appendChild(o),e={startX:n.clientX-s.x,startY:n.clientY-s.y,shield:o},n.preventDefault()}),document.addEventListener("mousemove",n=>{e&&(s.x=Math.max(0,Math.min(window.innerWidth-100,n.clientX-e.startX)),s.y=Math.max(0,Math.min(window.innerHeight-50,n.clientY-e.startY)),u.style.left=s.x+"px",u.style.top=s.y+"px")}),document.addEventListener("mouseup",()=>{e&&(e.shield.remove(),e=null,x(s))}),z=m.querySelector("#cc-proto"),$=m.querySelector("#cc-mode"),U=m.querySelector("#cc-pal"),Ve=m.querySelector("#cc-palrow"),_=m.querySelector("#cc-text"),N=m.querySelector("#cc-encode"),G=m.querySelector("#cc-litewarn"),W=m.querySelector("#cc-preview"),je=m.querySelector("#cc-hint"),z.value=String(s.enc.proto),$.value=String(s.enc.mode),U.value=String(s.enc.free);function t(){let n=parseInt(z.value,10),o=parseInt($.value,10),a=parseInt(U.value,10);s.enc={proto:n,mode:o,free:a},x(s),Ve.style.display=n===2?"":"none",je.style.display=n===2&&o===0?"":"none";let r=_.value,i=[];if(o===0)for(let d of r)!St.includes(d)&&!i.includes(d)&&i.push(d);if(i.length>0){G.style.display="block",G.textContent="Lite cannot encode: "+i.join(" ")+" - use Full.",W.textContent="",N.disabled=!0;return}G.style.display="none";let c=n===2?Lt(r,o,a):Et(r,o);if(!c){W.textContent="Message too long: payload exceeds 1023 px.",N.disabled=!0;return}let l=n===2?8:4;W.textContent="Payload "+c.length+" px + "+l+" px prefix = "+(c.length+l)+" px total.",N.disabled=!1}z.addEventListener("change",t),$.addEventListener("change",t),U.addEventListener("change",t),_.addEventListener("input",t),t(),N.addEventListener("click",()=>{Ue(),de&&de(_.value,s.enc.mode,s.enc.free,s.enc.proto)}),w.querySelector("#cc-autoreload").addEventListener("change",n=>{s.settings.autoReload=n.target.checked,x(s)}),w.querySelector("#cc-logs").addEventListener("change",n=>{s.settings.consoleLogs=n.target.checked,x(s)}),w.querySelector("#cc-reset").addEventListener("click",()=>{s.x=20,s.y=20,u.style.left="20px",u.style.top="20px",x(s)})}function $e(e,t="info",n=5e3){O&&(clearTimeout(O),O=null),S.textContent=e,S.className="cc-status "+t,n>0&&(O=setTimeout(()=>{S.textContent="",S.className="cc-status",O=null},n))}function ze(){return m?m.querySelector("#cc-action"):null}function Ue(){let e=ze();e&&(e.innerHTML="")}function Pt(){let e=ze();if(!e)return;e.innerHTML="";let t=document.createElement("button");t.className="cc-btn",t.style.background="#555",t.style.color="#fff",t.textContent="Overlay injected - Reload Now",t.onclick=()=>location.reload(),e.appendChild(t)}function Ge(){document.getElementById("cc-panel")||It()}function Ft(){u&&(u.style.display="flex")}function Rt(){u?u.style.display=u.style.display==="none"?"flex":"none":Ge()}function Bt(e){de=e}function Ot(e,t){let n=v.querySelector("#cc-decode-empty"),o=v.querySelector("#cc-decode-content");n.style.display="none",o.style.display="block";let a=e.version===2?"V2":"V1",r=e.mode===0?"Lite":"Full";e.version===2&&(r+=e.free?" (free colors)":" (all colors)");let i=e.valid?"CRC OK":"CRC WARNING (stored "+e.storedChecksum+" != computed "+e.computedChecksum+")",c=t?"Tile: "+t.tileX+","+t.tileY+" | Px: "+t.px+","+t.py:"",l="";e.badChars&&(l+='<div class="cc-warn">Warning: payload contains unmapped values (replaced with "?")</div>'),e.badPadding&&(l+='<div class="cc-warn">Warning: non-zero padding bits (possible corruption)</div>'),e.truncated&&(l+='<div class="cc-warn">Warning: message truncated (sequence shorter than header length)</div>'),e.badHeaderColors&&(l+='<div class="cc-warn">Warning: header contains non-free color ids (possible corruption)</div>'),e.reserved&&(l+='<div class="cc-warn">Warning: reserved header bits set ('+e.reserved+")</div>"),o.innerHTML=`
-        <div class="cc-meta">${a} ${r} | ${e.length} px | ${i}</div>
-        <div class="cc-meta">${c}</div>
-        ${l}
-        <div class="cc-decode-result">${Nt(e.text||"")}</div>
+    `;
+        body.appendChild(settingsPane);
+        statusEl = document.createElement("div");
+        statusEl.className = "cc-status";
+        body.appendChild(statusEl);
+        panel.appendChild(body);
+        document.documentElement.appendChild(panel);
+        bindEvents();
+      }
+      function bindEvents() {
+        body.querySelectorAll(".cc-tabs button").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            state.tab = btn.dataset.tab;
+            body.querySelectorAll(".cc-tabs button").forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            body.querySelectorAll(".cc-pane").forEach((p) => p.classList.remove("active"));
+            body.querySelector(`.cc-pane[data-tab="${state.tab}"]`).classList.add("active");
+            saveState(state);
+          });
+        });
+        header.querySelector("#cc-collapse").addEventListener("click", () => {
+          state.collapsed = !state.collapsed;
+          body.style.display = state.collapsed ? "none" : "block";
+          header.querySelector("#cc-collapse").textContent = state.collapsed ? "+" : "_";
+          saveState(state);
+        });
+        header.querySelector("#cc-close").addEventListener("click", () => {
+          panel.style.display = "none";
+        });
+        let drag = null;
+        header.addEventListener("mousedown", (e) => {
+          if (e.target.closest("button"))
+            return;
+          const shield = document.createElement("div");
+          shield.className = "cc-shield";
+          document.body.appendChild(shield);
+          drag = { startX: e.clientX - state.x, startY: e.clientY - state.y, shield };
+          e.preventDefault();
+        });
+        document.addEventListener("mousemove", (e) => {
+          if (!drag)
+            return;
+          state.x = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - drag.startX));
+          state.y = Math.max(0, Math.min(window.innerHeight - 50, e.clientY - drag.startY));
+          panel.style.left = state.x + "px";
+          panel.style.top = state.y + "px";
+        });
+        document.addEventListener("mouseup", () => {
+          if (drag) {
+            drag.shield.remove();
+            drag = null;
+            saveState(state);
+          }
+        });
+        protoSelect = encodePane.querySelector("#cc-proto");
+        modeSelect = encodePane.querySelector("#cc-mode");
+        palSelect = encodePane.querySelector("#cc-pal");
+        palRow = encodePane.querySelector("#cc-palrow");
+        textArea = encodePane.querySelector("#cc-text");
+        encodeBtn = encodePane.querySelector("#cc-encode");
+        liteWarn = encodePane.querySelector("#cc-litewarn");
+        previewEl = encodePane.querySelector("#cc-preview");
+        hintEl = encodePane.querySelector("#cc-hint");
+        protoSelect.value = String(state.enc.proto);
+        modeSelect.value = String(state.enc.mode);
+        palSelect.value = String(state.enc.free);
+        function refreshEncodePane() {
+          const proto = parseInt(protoSelect.value, 10);
+          const mode = parseInt(modeSelect.value, 10);
+          const free = parseInt(palSelect.value, 10);
+          state.enc = { proto, mode, free };
+          saveState(state);
+          palRow.style.display = proto === 2 ? "" : "none";
+          hintEl.style.display = proto === 2 && mode === 0 ? "" : "none";
+          const text = textArea.value;
+          const bad = [];
+          if (mode === 0) {
+            for (const ch of text) {
+              if (!ALPHABET.includes(ch) && !bad.includes(ch))
+                bad.push(ch);
+            }
+          }
+          if (bad.length > 0) {
+            liteWarn.style.display = "block";
+            liteWarn.textContent = "Lite cannot encode: " + bad.join(" ") + " - use Full.";
+            previewEl.textContent = "";
+            encodeBtn.disabled = true;
+            return;
+          }
+          liteWarn.style.display = "none";
+          const enc = proto === 2 ? encodeV22(text, mode, free) : encodeV12(text, mode);
+          if (!enc) {
+            previewEl.textContent = "Message too long: payload exceeds 1023 px.";
+            encodeBtn.disabled = true;
+            return;
+          }
+          const prefix = proto === 2 ? 8 : 4;
+          previewEl.textContent = "Payload " + enc.length + " px + " + prefix + " px prefix = " + (enc.length + prefix) + " px total.";
+          encodeBtn.disabled = false;
+        }
+        protoSelect.addEventListener("change", refreshEncodePane);
+        modeSelect.addEventListener("change", refreshEncodePane);
+        palSelect.addEventListener("change", refreshEncodePane);
+        textArea.addEventListener("input", refreshEncodePane);
+        refreshEncodePane();
+        encodeBtn.addEventListener("click", () => {
+          clearAction();
+          if (onEncodeCb) {
+            onEncodeCb(textArea.value, state.enc.mode, state.enc.free, state.enc.proto);
+          }
+        });
+        settingsPane.querySelector("#cc-autoreload").addEventListener("change", (e) => {
+          state.settings.autoReload = e.target.checked;
+          saveState(state);
+        });
+        settingsPane.querySelector("#cc-logs").addEventListener("change", (e) => {
+          state.settings.consoleLogs = e.target.checked;
+          saveState(state);
+        });
+        settingsPane.querySelector("#cc-reset").addEventListener("click", () => {
+          state.x = 20;
+          state.y = 20;
+          panel.style.left = "20px";
+          panel.style.top = "20px";
+          saveState(state);
+        });
+      }
+      function setStatus(msg, type = "info", timeout = 5e3) {
+        if (statusTimer) {
+          clearTimeout(statusTimer);
+          statusTimer = null;
+        }
+        statusEl.textContent = msg;
+        statusEl.className = "cc-status " + type;
+        if (timeout > 0) {
+          statusTimer = setTimeout(() => {
+            statusEl.textContent = "";
+            statusEl.className = "cc-status";
+            statusTimer = null;
+          }, timeout);
+        }
+      }
+      function actionSlot() {
+        return encodePane ? encodePane.querySelector("#cc-action") : null;
+      }
+      function clearAction() {
+        const slot = actionSlot();
+        if (slot)
+          slot.innerHTML = "";
+      }
+      function showReloadButton() {
+        const slot = actionSlot();
+        if (!slot)
+          return;
+        slot.innerHTML = "";
+        const btn = document.createElement("button");
+        btn.className = "cc-btn";
+        btn.style.background = "#555";
+        btn.style.color = "#fff";
+        btn.textContent = "Overlay injected - Reload Now";
+        btn.onclick = () => location.reload();
+        slot.appendChild(btn);
+      }
+      function init() {
+        if (document.getElementById("cc-panel"))
+          return;
+        createPanel();
+      }
+      function show() {
+        if (panel)
+          panel.style.display = "flex";
+      }
+      function toggle() {
+        if (!panel)
+          init();
+        else
+          panel.style.display = panel.style.display === "none" ? "flex" : "none";
+      }
+      function onEncode(cb) {
+        onEncodeCb = cb;
+      }
+      function showDecodeResult(result, tileInfo) {
+        const empty = decodePane.querySelector("#cc-decode-empty");
+        const content = decodePane.querySelector("#cc-decode-content");
+        empty.style.display = "none";
+        content.style.display = "block";
+        const proto = result.version === 2 ? "V2" : "V1";
+        let modeStr = result.mode === 0 ? "Lite" : "Full";
+        if (result.version === 2)
+          modeStr += result.free ? " (free colors)" : " (all colors)";
+        const crcStr = result.valid ? "CRC OK" : "CRC WARNING (stored " + result.storedChecksum + " != computed " + result.computedChecksum + ")";
+        const posStr = tileInfo ? "Tile: " + tileInfo.tileX + "," + tileInfo.tileY + " | Px: " + tileInfo.px + "," + tileInfo.py : "";
+        let warnHtml = "";
+        if (result.badChars)
+          warnHtml += '<div class="cc-warn">Warning: payload contains unmapped values (replaced with "?")</div>';
+        if (result.badPadding)
+          warnHtml += '<div class="cc-warn">Warning: non-zero padding bits (possible corruption)</div>';
+        if (result.truncated)
+          warnHtml += '<div class="cc-warn">Warning: message truncated (sequence shorter than header length)</div>';
+        if (result.badHeaderColors)
+          warnHtml += '<div class="cc-warn">Warning: header contains non-free color ids (possible corruption)</div>';
+        if (result.reserved)
+          warnHtml += '<div class="cc-warn">Warning: reserved header bits set (' + result.reserved + ")</div>";
+        content.innerHTML = `
+        <div class="cc-meta">${proto} ${modeStr} | ${result.length} px | ${crcStr}</div>
+        <div class="cc-meta">${posStr}</div>
+        ${warnHtml}
+        <div class="cc-decode-result">${escapeHtml(result.text || "")}</div>
         <button id="cc-copy" class="cc-btn" style="background:#555; color:#fff; margin-top:4px;">Copy Text</button>
-    `,o.querySelector("#cc-copy").addEventListener("click",()=>{navigator.clipboard.writeText(e.text||"").then(()=>{$e("Copied to clipboard","success")})}),s.tab="decode",f.querySelectorAll(".cc-tabs button").forEach(d=>d.classList.remove("active")),f.querySelector('.cc-tabs button[data-tab="decode"]').classList.add("active"),f.querySelectorAll(".cc-pane").forEach(d=>d.classList.remove("active")),v.classList.add("active"),x(s)}function Nt(e){return e.replace(/[&<>"']/g,t=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[t])}We.exports={init:Ge,show:Ft,toggle:Rt,setStatus:$e,onEncode:Bt,showDecodeResult:Ot,clearAction:Ue,showReloadButton:Pt,getSettings:()=>s.settings}});var{encodeV1:qt,decodeV1:Mt,unpackHeader:Ht,VERSION:Vt}=Q(),{encodeV2:jt,decodeV2:_t,unpackHeaderV2:$t,findSyncOffset:zt,PREFIX_LEN:Ut}=re(),{readSequenceHorizontal:ue,readPixel:Gt}=Fe(),{sequenceToPngBlob:Wt}=Oe(),{injectTemplate:Kt}=He(),p=Ke(),Xt=window.fetch;window.fetch=async function(...e){let t=await Xt.apply(this,e);try{let n=typeof e[0]=="string"?e[0]:e[0]&&e[0].url||"";if(n.includes("/pixel/")){let o=n.split("?")[0].split("/").filter(Boolean),a=parseInt(o[o.length-1],10),r=parseInt(o[o.length-2],10),i=new URLSearchParams(n.split("?")[1]||""),c=parseInt(i.get("x"),10),l=parseInt(i.get("y"),10);[r,a,c,l].every(d=>!isNaN(d))&&window.dispatchEvent(new CustomEvent("cc-click",{detail:{tileX:r,tileY:a,px:c,py:l}}))}}catch{}return t};var F=3,Yt=11;function E(e,t){p.getSettings().consoleLogs&&(t?console.log("%c"+e,t):console.log(e))}function Xe(e,t){let n=e.version===2?"V2":"V1",o=e.mode===0?"Lite":"Full";e.version===2&&(o+=e.free?"-free":""),e.valid?E("[CC] Decoded "+n+" "+o+" message ("+e.length+" px, crc OK)","color:#0c8;font-weight:bold"):E("[CC] Decoded "+n+" "+o+" message ("+e.length+" px) - CORRUPTED (stored "+e.storedChecksum+" != computed "+e.computedChecksum+")","color:#c80;font-weight:bold"),E(e.text),p.showDecodeResult(e,t)}async function Jt(e,t,n,o){let a=await ue(e,t,n-F,o,Yt),r=zt(a);if(r!==-1){let c=$t(a[r+4],a[r+5],a[r+6],a[r+7]),l=r+Ut+c.length,d=await ue(e,t,n-F,o,l),g=_t(d.slice(r));if(!g)return;Xe(g,{tileX:e,tileY:t,px:n,py:o});return}if(a[F]===1){let c=Ht(a[F+1],a[F+2],a[F+3]);if(c.version!==Vt){E("[CC] Unknown V1 header version "+c.version+", cannot decode."),p.setStatus("Unknown V1 header version "+c.version+".","error");return}let l=await ue(e,t,n,o,4+c.length),d=Mt(l);if(!d)return;Xe(d,{tileX:e,tileY:t,px:n,py:o});return}let i=await Gt(e,t,n,o);E("[CC] Not a sync pixel (id "+i.id+" "+i.name+"), nothing to decode here."),p.setStatus("Not a message sync pixel ("+i.name+").","info")}var pe={alt:!1,t:0};document.addEventListener("click",e=>{pe={alt:e.altKey,t:Date.now()}},!0);window.addEventListener("cc-click",e=>{if(!pe.alt||Date.now()-pe.t>2e3)return;let{tileX:t,tileY:n,px:o,py:a}=e.detail;Jt(t,n,o,a).catch(r=>{console.error("[CC] Decode error:",r),p.setStatus("Decode error: "+r.message,"error")})});function Zt(e){return e&&(e.tagName==="INPUT"||e.tagName==="TEXTAREA"||e.isContentEditable)}async function Je(e,t,n,o){p.clearAction(),p.setStatus("Encoding and generating PNG...","info");let a=o===2?jt(e,t,n):qt(e,t);if(!a){p.setStatus("Encode failed - character not in Lite alphabet, or message too long.","error");return}try{let r=await Wt(a.fullSequence),c=(o===2?"CC2 ":"CC ")+(t?"full":"lite")+(o===2&&n?"-free":"")+": "+e.slice(0,24);await Kt(r,c),E('[CC] Injected "'+c+'" ('+a.length+" px payload).","color:#0c8;font-weight:bold"),p.getSettings().autoReload?(p.setStatus("Reloading page...","info",0),setTimeout(()=>location.reload(),500)):(p.setStatus("Overlay injected: "+c,"success"),p.showReloadButton())}catch(r){console.error("[CC] Inject failed:",r),p.setStatus("Inject failed: "+r.message,"error")}}async function Qt(){let e=(prompt("Mode: l = Lite (basic chars), f = Full (any UTF-8)","l")||"").trim().toLowerCase();if(!e)return;let t=e.startsWith("f")?1:0,n=prompt("Message text:");n&&await Je(n,t,0,1)}document.addEventListener("keydown",e=>{e.altKey&&(Zt(e.target)||(e.code==="KeyM"&&Qt().catch(t=>{console.error("[CC] Inject failed:",t),p.setStatus("Inject failed: "+t.message,"error")}),e.code==="KeyC"&&p.toggle()))});function Ye(){p.init(),p.onEncode(Je),E("[CC] Ready. Alt+Click = decode, Alt+M = legacy V1 encode, Alt+C = toggle GUI.","color:#0af;font-weight:bold")}document.readyState==="loading"?document.addEventListener("DOMContentLoaded",Ye):Ye();})();
+    `;
+        content.querySelector("#cc-copy").addEventListener("click", () => {
+          navigator.clipboard.writeText(result.text || "").then(() => {
+            setStatus("Copied to clipboard", "success");
+          });
+        });
+        state.tab = "decode";
+        body.querySelectorAll(".cc-tabs button").forEach((b) => b.classList.remove("active"));
+        body.querySelector('.cc-tabs button[data-tab="decode"]').classList.add("active");
+        body.querySelectorAll(".cc-pane").forEach((p) => p.classList.remove("active"));
+        decodePane.classList.add("active");
+        saveState(state);
+      }
+      function escapeHtml(str) {
+        return str.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
+      }
+      module.exports = {
+        init,
+        show,
+        toggle,
+        setStatus,
+        onEncode,
+        showDecodeResult,
+        clearAction,
+        showReloadButton,
+        getSettings: () => state.settings
+      };
+    }
+  });
+
+  // src/script.js
+  var {
+    encodeV1,
+    decodeV1,
+    unpackHeader,
+    VERSION,
+    encodeV2,
+    decodeV2,
+    unpackHeaderV2,
+    findSyncOffset,
+    PREFIX_LEN
+  } = require_protocol();
+  var { readSequenceHorizontal, readPixel } = require_wplace();
+  var { sequenceToPngBlob } = require_render();
+  var { injectTemplate } = require_templates();
+  var gui = require_gui();
+  var origFetch = window.fetch;
+  window.fetch = async function(...args) {
+    const response = await origFetch.apply(this, args);
+    try {
+      const url = typeof args[0] === "string" ? args[0] : args[0] && args[0].url || "";
+      if (url.includes("/pixel/")) {
+        const parts = url.split("?")[0].split("/").filter(Boolean);
+        const tileY = parseInt(parts[parts.length - 1], 10);
+        const tileX = parseInt(parts[parts.length - 2], 10);
+        const q = new URLSearchParams(url.split("?")[1] || "");
+        const px = parseInt(q.get("x"), 10);
+        const py = parseInt(q.get("y"), 10);
+        if ([tileX, tileY, px, py].every((n) => !isNaN(n))) {
+          window.dispatchEvent(new CustomEvent("cc-click", { detail: { tileX, tileY, px, py } }));
+        }
+      }
+    } catch (e) {
+    }
+    return response;
+  };
+  var CLICK_INDEX = 3;
+  var WINDOW_LEN = 11;
+  function log(msg, style) {
+    if (!gui.getSettings().consoleLogs)
+      return;
+    if (style)
+      console.log("%c" + msg, style);
+    else
+      console.log(msg);
+  }
+  function reportDecode(result, tileInfo) {
+    const proto = result.version === 2 ? "V2" : "V1";
+    let modeStr = result.mode === 0 ? "Lite" : "Full";
+    if (result.version === 2)
+      modeStr += result.free ? "-free" : "";
+    if (result.valid) {
+      log(
+        "[CC] Decoded " + proto + " " + modeStr + " message (" + result.length + " px, crc OK)",
+        "color:#0c8;font-weight:bold"
+      );
+    } else {
+      log(
+        "[CC] Decoded " + proto + " " + modeStr + " message (" + result.length + " px) - CORRUPTED (stored " + result.storedChecksum + " != computed " + result.computedChecksum + ")",
+        "color:#c80;font-weight:bold"
+      );
+    }
+    log(result.text);
+    gui.showDecodeResult(result, tileInfo);
+  }
+  async function attemptDecode(tileX, tileY, px, py) {
+    const win = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, WINDOW_LEN);
+    const off = findSyncOffset(win);
+    if (off !== -1) {
+      const hdr = unpackHeaderV2(win[off + 4], win[off + 5], win[off + 6], win[off + 7]);
+      const total = off + PREFIX_LEN + hdr.length;
+      const seq = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, total);
+      const result = decodeV2(seq.slice(off));
+      if (!result)
+        return;
+      reportDecode(result, { tileX, tileY, px, py });
+      return;
+    }
+    if (win[CLICK_INDEX] === 1) {
+      const header = unpackHeader(win[CLICK_INDEX + 1], win[CLICK_INDEX + 2], win[CLICK_INDEX + 3]);
+      if (header.version !== VERSION) {
+        log("[CC] Unknown V1 header version " + header.version + ", cannot decode.");
+        gui.setStatus("Unknown V1 header version " + header.version + ".", "error");
+        return;
+      }
+      const sequence = await readSequenceHorizontal(tileX, tileY, px, py, 4 + header.length);
+      const result = decodeV1(sequence);
+      if (!result)
+        return;
+      reportDecode(result, { tileX, tileY, px, py });
+      return;
+    }
+    const c = await readPixel(tileX, tileY, px, py);
+    log("[CC] Not a sync pixel (id " + c.id + " " + c.name + "), nothing to decode here.");
+    gui.setStatus("Not a message sync pixel (" + c.name + ").", "info");
+  }
+  var lastClick = { alt: false, t: 0 };
+  document.addEventListener("click", (e) => {
+    lastClick = { alt: e.altKey, t: Date.now() };
+  }, true);
+  window.addEventListener("cc-click", (e) => {
+    if (!lastClick.alt || Date.now() - lastClick.t > 2e3)
+      return;
+    const { tileX, tileY, px, py } = e.detail;
+    attemptDecode(tileX, tileY, px, py).catch((err) => {
+      console.error("[CC] Decode error:", err);
+      gui.setStatus("Decode error: " + err.message, "error");
+    });
+  });
+  function isTyping(target) {
+    return target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+  }
+  async function executeEncode(text, mode, free, protocol) {
+    gui.clearAction();
+    gui.setStatus("Encoding and generating PNG...", "info");
+    const enc = protocol === 2 ? encodeV2(text, mode, free) : encodeV1(text, mode);
+    if (!enc) {
+      gui.setStatus("Encode failed - character not in Lite alphabet, or message too long.", "error");
+      return;
+    }
+    try {
+      const blob = await sequenceToPngBlob(enc.fullSequence);
+      const tag = (protocol === 2 ? "CC2 " : "CC ") + (mode ? "full" : "lite") + (protocol === 2 && free ? "-free" : "") + ": ";
+      const name = tag + text.slice(0, 24);
+      await injectTemplate(blob, name);
+      log('[CC] Injected "' + name + '" (' + enc.length + " px payload).", "color:#0c8;font-weight:bold");
+      if (gui.getSettings().autoReload) {
+        gui.setStatus("Reloading page...", "info", 0);
+        setTimeout(() => location.reload(), 500);
+      } else {
+        gui.setStatus("Overlay injected: " + name, "success");
+        gui.showReloadButton();
+      }
+    } catch (err) {
+      console.error("[CC] Inject failed:", err);
+      gui.setStatus("Inject failed: " + err.message, "error");
+    }
+  }
+  async function legacyMakeMessage() {
+    const modeRaw = (prompt("Mode: l = Lite (basic chars), f = Full (any UTF-8)", "l") || "").trim().toLowerCase();
+    if (!modeRaw)
+      return;
+    const mode = modeRaw.startsWith("f") ? 1 : 0;
+    const text = prompt("Message text:");
+    if (!text)
+      return;
+    await executeEncode(text, mode, 0, 1);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!e.altKey)
+      return;
+    if (isTyping(e.target))
+      return;
+    if (e.code === "KeyM") {
+      legacyMakeMessage().catch((err) => {
+        console.error("[CC] Inject failed:", err);
+        gui.setStatus("Inject failed: " + err.message, "error");
+      });
+    }
+    if (e.code === "KeyC") {
+      gui.toggle();
+    }
+  });
+  function initApp() {
+    gui.init();
+    gui.onEncode(executeEncode);
+    log(
+      "[CC] Ready. Alt+Click = decode, Alt+M = legacy V1 encode, Alt+C = toggle GUI.",
+      "color:#0af;font-weight:bold"
+    );
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initApp);
+  } else {
+    initApp();
+  }
+})();

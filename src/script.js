@@ -4,8 +4,10 @@
 //   Alt+M                    -> legacy V1 encode via prompts
 //   Alt+C                    -> toggle GUI
 
-const { encodeV1, decodeV1, unpackHeader, VERSION } = require('./core/v1.js');
-const { encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/v2.js');
+const {
+    encodeV1, decodeV1, unpackHeader, VERSION,
+    encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN
+} = require('./core/protocol.js');
 const { readSequenceHorizontal, readPixel } = require('./core/wplace.js');
 const { sequenceToPngBlob } = require('./core/render.js');
 const { injectTemplate } = require('./core/templates.js');

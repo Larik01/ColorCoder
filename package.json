@@ -3,10 +3,12 @@
   "version": "0.2.0",
   "description": "Color encoder/decoder for wplace.live",
   "scripts": {
-    "test": "node tests/test-colors.js && node tests/test-v1.js && node tests/test-v2.js",
+    "test": "node tests/test-colors.js && node tests/test-v1.js && node tests/test-v2.js && node tests/test-magic.js && node tests/test-scanner.js",
     "test-colors": "node tests/test-colors.js",
     "test-v1": "node tests/test-v1.js",
     "test-v2": "node tests/test-v2.js",
+    "test-magic": "node tests/test-magic.js",
+    "test-scanner": "node tests/test-scanner.js",
     "build": "node scripts/build.js",
     "dev": "node scripts/build.js --dev"
   },
