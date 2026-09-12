@@ -936,6 +936,73 @@
     }
   });
 
+  // src/core/keys.js
+  var require_keys = __commonJS({
+    "src/core/keys.js"(exports, module) {
+      var G_MAX = 50;
+      var COUNT = 256 * (G_MAX + 1);
+      function keyColor(idx) {
+        return [idx & 255, idx >> 8, 255];
+      }
+      function buildTable(entries) {
+        const table = new Int16Array(16384).fill(-1);
+        for (const e of entries) {
+          table[e.color[1] << 8 | e.color[0]] = e.keyIndex;
+        }
+        return table;
+      }
+      function keyIndexOfTable(table, r, g, b) {
+        if (b !== 255)
+          return -1;
+        if (g > 63)
+          return -1;
+        return table[g << 8 | r];
+      }
+      function makeRegistry(count, onEvict) {
+        const map = /* @__PURE__ */ new Map();
+        const order = [];
+        return {
+          size: function() {
+            return map.size;
+          },
+          values: function() {
+            return map.values();
+          },
+          findByIndex: function(idx) {
+            return map.get(idx);
+          },
+          assign: function(gx, gy, payload) {
+            let idx;
+            if (order.length >= count) {
+              idx = order.shift();
+              map.delete(idx);
+              if (onEvict)
+                onEvict(idx);
+            } else {
+              idx = 0;
+              while (map.has(idx))
+                idx++;
+            }
+            order.push(idx);
+            const entry = Object.assign({
+              color: keyColor(idx),
+              keyIndex: idx,
+              rect: { x: gx, y: gy - 1, w: 2, h: 2 },
+              gx,
+              gy
+            }, payload);
+            map.set(idx, entry);
+            return entry;
+          },
+          dump: function() {
+            return Array.from(map.values());
+          }
+        };
+      }
+      module.exports = { G_MAX, COUNT, keyColor, buildTable, keyIndexOfTable, makeRegistry };
+    }
+  });
+
   // src/core/intercept.js
   var require_intercept = __commonJS({
     "src/core/intercept.js"(exports, module) {
@@ -951,13 +1018,10 @@
         markerClips
       } = require_scan();
       var { TILE_SIZE, getTileImageData, readSequenceHorizontal: readSequenceHorizontal2, seedTileCache } = require_wplace();
-      var MAGIC_KEYS = [];
-      for (const g of [0, 34]) {
-        for (let r = 1; r <= 239; r += 34)
-          MAGIC_KEYS.push([r, g, 255]);
-      }
-      var nextKey = 0;
-      var registry = /* @__PURE__ */ new Map();
+      var { COUNT: KEY_COUNT, makeRegistry } = require_keys();
+      var registry = makeRegistry(KEY_COUNT, (idx) => {
+        console.warn("[CC-INTERCEPT] key space exhausted (" + KEY_COUNT + "); evicted oldest marker idx " + idx);
+      });
       var MSGSEEN = /* @__PURE__ */ new Set();
       var DBG = { tiles: 0, found: 0, decodeOk: 0, decodeErr: 0, painted: 0 };
       var SYNC_RGB = syncRGB(COLOR_PALETTE);
@@ -1012,23 +1076,10 @@
         MSGSEEN.add(key);
         DBG.decodeOk++;
         const modeStr = (r.mode === 0 ? "Lite" : "Full") + (r.free ? "-free" : "");
-        if (nextKey > 0 && nextKey % MAGIC_KEYS.length === 0) {
-          console.warn("[CC-INTERCEPT] magic key space wrapped; labels may collide");
-        }
-        const color = MAGIC_KEYS[nextKey % MAGIC_KEYS.length];
-        nextKey++;
-        registry.set(color.join(","), {
-          color,
-          rect: markerRect(gx, gy),
-          gx,
-          gy,
-          text: r.text,
-          valid: r.valid,
-          modeStr
-        });
+        const entry = registry.assign(gx, gy, { text: r.text, valid: r.valid, modeStr });
         const crcStr = r.valid ? "CRC OK" : "CRC BAD (stored " + r.stored + " != " + r.computed + ")";
         console.log(
-          "%c[CC-INTERCEPT] V2 " + modeStr + " @" + gx + "," + gy + " | " + r.length + " px | " + crcStr + ' | "' + r.text + '" | magic rgb(' + color.join(",") + ")",
+          "%c[CC-INTERCEPT] V2 " + modeStr + " @" + gx + "," + gy + " | " + r.length + " px | " + crcStr + ' | "' + r.text + '" | magic rgb(' + entry.color.join(",") + ")",
           "color:#0c8;font-weight:bold"
         );
       }
@@ -1081,14 +1132,22 @@
         }
         return outBlob;
       }
-      module.exports = { processTile, registry, MAGIC_KEYS, DBG };
+      module.exports = { processTile, registry, KEY_COUNT, DBG };
     }
   });
 
   // src/core/labels.js
   var require_labels = __commonJS({
     "src/core/labels.js"(exports, module) {
-      var { registry, MAGIC_KEYS } = require_intercept();
+      var { COUNT, buildTable, keyIndexOfTable } = require_keys();
+      var { registry } = require_intercept();
+      var WIN = 32;
+      var WIN_GROW = 3;
+      var BUDGET = 8;
+      var GRACE = 15;
+      var PARK_MARGIN = 64;
+      var SCROLL_QUIET_MS = 150;
+      var PERIODIC_MS = 2e3;
       var pickCV = null;
       var pickGL = null;
       function glOf() {
@@ -1100,24 +1159,11 @@
           pickGL = pickCV.getContext("webgl2") || pickCV.getContext("webgl");
         return pickGL;
       }
-      function keyIndexOf(r, g, b) {
-        if (b < 239)
-          return -1;
-        let gi;
-        if (g <= 16)
-          gi = 0;
-        else if (g >= 18 && g <= 50)
-          gi = 1;
-        else
-          return -1;
-        const i = Math.round((r - 1) / 34);
-        if (i < 0 || i > 7)
-          return -1;
-        if (Math.abs(r - (1 + 34 * i)) > 16)
-          return -1;
-        return gi * 8 + i;
+      function isCanvas(t) {
+        return !!(t && t.closest && t.closest(".maplibregl-canvas-container"));
       }
       var layer = null;
+      var elems = /* @__PURE__ */ new Map();
       function ensureLayer() {
         if (layer)
           return layer;
@@ -1126,70 +1172,381 @@
         document.documentElement.appendChild(layer);
         return layer;
       }
-      function clearLabels() {
-        if (layer)
-          layer.innerHTML = "";
-      }
-      function addLabel(m, x, y) {
+      function makeLabel(m) {
         const el = document.createElement("div");
         el.style.cssText = "position:absolute;left:0;top:0;padding:2px 5px;background:rgba(10,10,20,.85);color:#7fffd4;border:1px solid #7fffd466;border-radius:3px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
         el.textContent = (m.valid ? "" : "[CRC] ") + m.text;
         el.title = m.modeStr + " | " + m.text;
         ensureLayer().appendChild(el);
-        el.style.transform = "translate(" + x + "px," + y + "px) translate(6px,-110%)";
+        return el;
       }
-      function scanAndLabel() {
+      function placeElem(el, cx, cy) {
+        el.style.transform = "translate(" + cx + "px," + cy + "px) translate(6px,-110%)";
+      }
+      function dropLabel(ki) {
+        const el = elems.get(ki);
+        if (el)
+          el.remove();
+        elems.delete(ki);
+      }
+      function clearLayer() {
+        if (layer)
+          layer.innerHTML = "";
+        elems.clear();
+      }
+      function showLayer() {
+        if (layer)
+          layer.style.display = "";
+      }
+      function hideLayer() {
+        if (layer)
+          layer.style.display = "none";
+      }
+      function layerHidden() {
+        return !!layer && layer.style.display === "none";
+      }
+      var mode = "off";
+      var scrollKind = "zoom";
+      var tracks = /* @__PURE__ */ new Map();
+      var table = null;
+      var tableSize = -1;
+      var rr = 0;
+      var lastFull = 0;
+      var quietTimer = 0;
+      var loopOn = false;
+      var scanPending = false;
+      var buttonHeld = false;
+      var lastPX = 0;
+      var lastPY = 0;
+      var dragX = 0;
+      var dragY = 0;
+      function armed() {
+        return mode !== "off";
+      }
+      function refreshTable() {
+        if (tableSize !== registry.size()) {
+          table = buildTable(registry.values());
+          tableSize = registry.size();
+        }
+      }
+      function geom() {
+        const rect = pickCV.getBoundingClientRect();
+        const W = pickGL.drawingBufferWidth, H = pickGL.drawingBufferHeight;
+        return { rect, W, H, kx: W / rect.width, ky: H / rect.height };
+      }
+      function cssOf(fx, fy, g) {
+        return [
+          g.rect.left + fx * g.rect.width / g.W,
+          g.rect.top + (g.H - 1 - fy) * g.rect.height / g.H
+        ];
+      }
+      function updateParked(t, g) {
+        t.parked = t.fx < -PARK_MARGIN || t.fx > g.W + PARK_MARGIN || t.fy < -PARK_MARGIN || t.fy > g.H + PARK_MARGIN;
+        if (t.parked)
+          t.miss = 0;
+      }
+      function anyDormant() {
+        for (const t of tracks.values())
+          if (t.dormant)
+            return true;
+        return false;
+      }
+      function blindMove(dx, dy) {
+        if (!dx && !dy)
+          return;
+        if (!pickCV || !pickGL)
+          return;
+        const g = geom();
+        for (const [ki, t] of tracks) {
+          t.fx += dx * g.kx;
+          t.fy -= dy * g.ky;
+          updateParked(t, g);
+          if (t.dormant)
+            continue;
+          const el = elems.get(ki);
+          if (el) {
+            const c = cssOf(t.fx, t.fy, g);
+            placeElem(el, c[0], c[1]);
+          }
+        }
+      }
+      function reanchor() {
+        dragX = lastPX;
+        dragY = lastPY;
+      }
+      function scanAndLabel(postMode) {
         const gl = glOf();
         if (!gl) {
           console.log("[CC-LABELS] no map canvas yet");
           return;
         }
+        if (scanPending)
+          return;
+        scanPending = true;
+        if (quietTimer) {
+          clearTimeout(quietTimer);
+          quietTimer = 0;
+        }
         requestAnimationFrame(() => requestAnimationFrame(() => {
-          const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+          scanPending = false;
+          const g = geom();
           const t0 = performance.now();
-          const px = new Uint8Array(W * H * 4);
-          gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          const px = new Uint8Array(g.W * g.H * 4);
+          gl.readPixels(0, 0, g.W, g.H, gl.RGBA, gl.UNSIGNED_BYTE, px);
           const t1 = performance.now();
           let ok = 0;
           for (let k = 1; k < 10; k++) {
-            if (px[(Math.floor(H * k / 10) * W + Math.floor(W * k / 10)) * 4 + 3] > 0)
+            if (px[(Math.floor(g.H * k / 10) * g.W + Math.floor(g.W * k / 10)) * 4 + 3] > 0)
               ok++;
           }
           if (ok < 5) {
             console.log("[CC-LABELS] invalid frame, press Alt+L again");
             return;
           }
-          const sx = new Float64Array(MAGIC_KEYS.length);
-          const sy = new Float64Array(MAGIC_KEYS.length);
-          const sn = new Uint32Array(MAGIC_KEYS.length);
+          refreshTable();
+          const sx = new Float64Array(COUNT), sy = new Float64Array(COUNT), sn = new Uint32Array(COUNT);
           for (let i = 0; i < px.length; i += 4) {
-            const ki = keyIndexOf(px[i], px[i + 1], px[i + 2]);
-            if (ki === -1)
+            const ki = keyIndexOfTable(table, px[i], px[i + 1], px[i + 2]);
+            if (ki < 0)
               continue;
             const p = i / 4;
-            sx[ki] += p % W;
-            sy[ki] += Math.floor(p / W);
+            sx[ki] += p % g.W;
+            sy[ki] += Math.floor(p / g.W);
             sn[ki]++;
           }
-          const rect = pickCV.getBoundingClientRect();
-          clearLabels();
-          let placed = 0;
-          for (let ki = 0; ki < MAGIC_KEYS.length; ki++) {
-            if (sn[ki] < 2)
+          showLayer();
+          let placed = 0, dormant = 0;
+          for (const ki of Array.from(tracks.keys())) {
+            const t = tracks.get(ki);
+            const m = registry.findByIndex(ki);
+            if (!m) {
+              tracks.delete(ki);
+              dropLabel(ki);
               continue;
-            const m = registry.get(MAGIC_KEYS[ki].join(","));
+            }
+            if (sn[ki] > 0) {
+              t.fx = sx[ki] / sn[ki];
+              t.fy = sy[ki] / sn[ki];
+              t.miss = 0;
+              t.parked = false;
+              t.dormant = false;
+              let el = elems.get(ki);
+              if (!el) {
+                el = makeLabel(m);
+                elems.set(ki, el);
+              }
+              const c = cssOf(t.fx, t.fy, g);
+              placeElem(el, c[0], c[1]);
+              placed++;
+            } else if (!t.parked && !t.dormant) {
+              t.dormant = true;
+              dropLabel(ki);
+              dormant++;
+            } else if (t.dormant) {
+              dormant++;
+            }
+          }
+          for (let ki = 0; ki < COUNT; ki++) {
+            if (sn[ki] < 1 || tracks.has(ki))
+              continue;
+            const m = registry.findByIndex(ki);
             if (!m)
               continue;
-            const cx = sx[ki] / sn[ki];
-            const cy = sy[ki] / sn[ki];
-            const lx = rect.left + cx * rect.width / W;
-            const ly = rect.top + (H - 1 - cy) * rect.height / H;
-            addLabel(m, lx, ly);
-            placed++;
+            const fx = sx[ki] / sn[ki], fy = sy[ki] / sn[ki];
+            const t = { fx, fy, miss: 0, parked: false, dormant: false };
+            updateParked(t, g);
+            tracks.set(ki, t);
+            if (!t.parked) {
+              const el = makeLabel(m);
+              elems.set(ki, el);
+              const c = cssOf(fx, fy, g);
+              placeElem(el, c[0], c[1]);
+              placed++;
+            }
           }
-          console.log("[CC-LABELS] " + placed + " labels placed | read=" + (t1 - t0).toFixed(1) + "ms total=" + (performance.now() - t0).toFixed(1) + "ms");
+          lastFull = performance.now();
+          if (postMode === "drag" && buttonHeld) {
+            mode = "drag";
+            reanchor();
+          } else {
+            mode = "idle";
+            kick();
+          }
+          console.log("[CC-LABELS] " + placed + " labels placed, " + dormant + " dormant | read=" + (t1 - t0).toFixed(1) + "ms total=" + (performance.now() - t0).toFixed(1) + "ms | servo armed" + (mode === "drag" ? " (drag held)" : ""));
         }));
       }
+      function clearLabels() {
+        mode = "off";
+        tracks.clear();
+        clearLayer();
+        showLayer();
+        if (quietTimer) {
+          clearTimeout(quietTimer);
+          quietTimer = 0;
+        }
+      }
+      setInterval(() => {
+        if (mode !== "idle" || scanPending)
+          return;
+        if (registry.size() === 0)
+          return;
+        if (!anyDormant() && tracks.size > 0)
+          return;
+        if (performance.now() - lastFull < PERIODIC_MS)
+          return;
+        scanAndLabel();
+      }, 1e3);
+      function kick() {
+        if (!loopOn && mode === "idle" && tracks.size) {
+          loopOn = true;
+          requestAnimationFrame(() => requestAnimationFrame(tick));
+        }
+      }
+      function tick() {
+        loopOn = false;
+        if (mode !== "idle" || !tracks.size || !pickGL)
+          return;
+        refreshTable();
+        const g = geom();
+        const kis = Array.from(tracks.keys());
+        let processed = 0;
+        for (let n = 0; n < kis.length && processed < BUDGET; n++) {
+          const ki = kis[(rr + n) % kis.length];
+          const t = tracks.get(ki);
+          if (!t || t.parked || t.dormant)
+            continue;
+          processed++;
+          const m = registry.findByIndex(ki);
+          if (!m) {
+            tracks.delete(ki);
+            dropLabel(ki);
+            continue;
+          }
+          const span = WIN << Math.min(t.miss, WIN_GROW);
+          if (span > g.W || span > g.H) {
+            t.dormant = true;
+            dropLabel(ki);
+            continue;
+          }
+          let x0 = Math.round(t.fx - span / 2);
+          let y0 = Math.round(t.fy - span / 2);
+          x0 = Math.max(0, Math.min(g.W - span, x0));
+          y0 = Math.max(0, Math.min(g.H - span, y0));
+          const buf = new Uint8Array(span * span * 4);
+          pickGL.readPixels(x0, y0, span, span, pickGL.RGBA, pickGL.UNSIGNED_BYTE, buf);
+          let sx = 0, sy = 0, sn = 0;
+          for (let i = 0; i < buf.length; i += 4) {
+            if (keyIndexOfTable(table, buf[i], buf[i + 1], buf[i + 2]) !== ki)
+              continue;
+            const p = i / 4;
+            sx += p % span;
+            sy += Math.floor(p / span);
+            sn++;
+          }
+          if (sn > 0) {
+            t.fx = x0 + sx / sn;
+            t.fy = y0 + sy / sn;
+            t.miss = 0;
+            updateParked(t, g);
+            const el = elems.get(ki);
+            if (el) {
+              const c = cssOf(t.fx, t.fy, g);
+              placeElem(el, c[0], c[1]);
+            }
+          } else {
+            t.miss++;
+            if (t.miss > GRACE) {
+              t.dormant = true;
+              dropLabel(ki);
+            }
+          }
+        }
+        rr = kis.length ? (rr + processed) % kis.length : 0;
+        kick();
+      }
+      document.addEventListener("pointerdown", (e) => {
+        if (!armed() || e.button !== 0 || !isCanvas(e.target))
+          return;
+        buttonHeld = true;
+        lastPX = e.clientX;
+        lastPY = e.clientY;
+        if (quietTimer) {
+          clearTimeout(quietTimer);
+          quietTimer = 0;
+        }
+        mode = "drag";
+        reanchor();
+      });
+      window.addEventListener("pointermove", (e) => {
+        if (!armed())
+          return;
+        lastPX = e.clientX;
+        lastPY = e.clientY;
+        if (!buttonHeld)
+          return;
+        if (mode !== "drag" && mode !== "scroll")
+          return;
+        const dx = e.clientX - dragX;
+        const dy = e.clientY - dragY;
+        dragX = e.clientX;
+        dragY = e.clientY;
+        blindMove(dx, dy);
+      });
+      window.addEventListener("pointerup", (e) => {
+        if (e.button !== 0)
+          return;
+        buttonHeld = false;
+        if (mode !== "drag")
+          return;
+        if (layerHidden()) {
+          enterScroll("zoom");
+        } else {
+          mode = "idle";
+          kick();
+        }
+      });
+      function enterScroll(kind) {
+        mode = "scroll";
+        scrollKind = kind;
+        if (kind === "zoom")
+          hideLayer();
+        if (quietTimer)
+          clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => {
+          quietTimer = 0;
+          if (mode !== "scroll")
+            return;
+          if (scrollKind === "zoom") {
+            scanAndLabel(buttonHeld ? "drag" : "idle");
+          } else {
+            if (buttonHeld) {
+              mode = "drag";
+              reanchor();
+            } else {
+              mode = "idle";
+              kick();
+            }
+          }
+        }, SCROLL_QUIET_MS);
+      }
+      window.addEventListener("wheel", (e) => {
+        if (!armed() || !isCanvas(e.target))
+          return;
+        const mul = e.deltaMode === 1 ? 33 : 1;
+        const dx = e.deltaX * mul;
+        const dy = e.deltaY * mul;
+        const kind = e.ctrlKey || dx === 0 && Math.abs(dy) >= 48 ? "zoom" : "pan";
+        if (kind === "pan" && mode === "scroll" && scrollKind === "zoom") {
+          return;
+        }
+        enterScroll(kind);
+        if (kind === "pan")
+          blindMove(dx, dy);
+      }, { passive: true });
+      document.addEventListener("dblclick", (e) => {
+        if (armed() && isCanvas(e.target))
+          enterScroll("zoom");
+      });
       module.exports = { scanAndLabel, clearLabels };
     }
   });
@@ -1832,7 +2189,7 @@
       e.preventDefault();
     }
     if (e.code === "KeyS" && !e.shiftKey) {
-      console.log("[CC] SUMMARY " + JSON.stringify(intercept.DBG) + " registry=" + intercept.registry.size);
+      console.log("[CC] SUMMARY " + JSON.stringify(intercept.DBG) + " keyspace=" + intercept.KEY_COUNT + " registry=" + intercept.registry.size());
       for (const m of intercept.registry.values()) {
         console.log("[CC]   key rgb(" + m.color.join(",") + ") -> @" + m.gx + "," + m.gy + ' "' + m.text + '"');
       }

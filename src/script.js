@@ -221,7 +221,7 @@ document.addEventListener('keydown', (e) => {
     }
     if (e.code === 'KeyS' && !e.shiftKey) {
         console.log('[CC] SUMMARY ' + JSON.stringify(intercept.DBG) +
-            ' registry=' + intercept.registry.size);
+            ' keyspace=' + intercept.KEY_COUNT + ' registry=' + intercept.registry.size());
         for (const m of intercept.registry.values()) {
             console.log('[CC]   key rgb(' + m.color.join(',') + ') -> @' +
                 m.gx + ',' + m.gy + ' "' + m.text + '"');

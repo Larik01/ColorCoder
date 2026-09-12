@@ -14,15 +14,13 @@ const {
     markerRect, markerClips
 } = require('./scan.js');
 const { TILE_SIZE, getTileImageData, readSequenceHorizontal, seedTileCache } = require('./wplace.js');
+const { COUNT: KEY_COUNT, makeRegistry } = require('./keys.js');
 
-// ---------- magic color space: 16 tolerance-safe keys (v5 semantics) ----------
-const MAGIC_KEYS = [];
-for (const g of [0, 34]) {
-    for (let r = 1; r <= 239; r += 34) MAGIC_KEYS.push([r, g, 255]);
-}
-let nextKey = 0;
-
-const registry = new Map(); // "r,g,b" -> { color, rect, gx, gy, text, valid, modeStr }
+// 13,056 exact-match desert keys, FIFO registry with loud eviction.
+const registry = makeRegistry(KEY_COUNT, (idx) => {
+    console.warn('[CC-INTERCEPT] key space exhausted (' + KEY_COUNT +
+        '); evicted oldest marker idx ' + idx);
+});
 
 // Positions registered this page load; stops re-decoding on every refetch.
 // Set only AFTER success, so a transient read failure retries next refetch.
@@ -86,23 +84,13 @@ async function tryDecodeAndRegister(gx, gy) {
     DBG.decodeOk++;
 
     const modeStr = (r.mode === 0 ? 'Lite' : 'Full') + (r.free ? '-free' : '');
-
-    if (nextKey > 0 && nextKey % MAGIC_KEYS.length === 0) {
-        console.warn('[CC-INTERCEPT] magic key space wrapped; labels may collide');
-    }
-    const color = MAGIC_KEYS[nextKey % MAGIC_KEYS.length];
-    nextKey++;
-
-    registry.set(color.join(','), {
-        color, rect: markerRect(gx, gy), gx, gy,
-        text: r.text, valid: r.valid, modeStr
-    });
+    const entry = registry.assign(gx, gy, { text: r.text, valid: r.valid, modeStr: modeStr });
 
     const crcStr = r.valid ? 'CRC OK' :
         'CRC BAD (stored ' + r.stored + ' != ' + r.computed + ')';
     console.log('%c[CC-INTERCEPT] V2 ' + modeStr + ' @' + gx + ',' + gy +
         ' | ' + r.length + ' px | ' + crcStr + ' | "' + r.text +
-        '" | magic rgb(' + color.join(',') + ')',
+        '" | magic rgb(' + entry.color.join(',') + ')',
         'color:#0c8;font-weight:bold');
 }
 
@@ -160,4 +148,4 @@ async function processTile(tx, ty, blob) {
     return outBlob;
 }
 
-module.exports = { processTile, registry, MAGIC_KEYS, DBG };
+module.exports = { processTile, registry, KEY_COUNT, DBG };
