@@ -1,48 +1,80 @@
 // src/script.js
 // Userscript ENTRY POINT. Bundled by esbuild with the core/ modules.
-//   Alt+Click any sync pixel -> decode (V2 windowed first, V1 fallback)
+//   Alt+Click any sync pixel -> manual decode (V2 windowed first, V1 fallback)
 //   Alt+M                    -> legacy V1 encode via prompts
 //   Alt+C                    -> toggle GUI
+//   Alt+L                    -> scan framebuffer and place labels
+//   Alt+Shift+L              -> clear labels
+//   Alt+S                    -> counters and registry dump
 
-const {
-    encodeV1, decodeV1, unpackHeader, VERSION,
-    encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN
-} = require('./core/protocol.js');
+const { encodeV1, decodeV1, unpackHeader, VERSION,
+        encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/protocol.js');
 const { readSequenceHorizontal, readPixel } = require('./core/wplace.js');
-const { sequenceToPngBlob } = require('./core/render.js');
-const { injectTemplate } = require('./core/templates.js');
+const { sequenceToPngBlob, injectTemplate } = require('./core/overlays.js');
+const intercept = require('./core/intercept.js');
+const labels = require('./core/labels.js');
 const gui = require('./core/gui.js');
 
 // ==========================================================
-// 1. FETCH SPY (direct wrap, runs at document-start)
+// 1. SINGLE FETCH WRAP: tile intercept + click spy
+//    wplace.js captured RAW_FETCH at module eval, before this wrap exists,
+//    so all of our own reads bypass everything below.
 // ==========================================================
 const origFetch = window.fetch;
-window.fetch = async function (...args) {
-    const response = await origFetch.apply(this, args);
+window.fetch = function (...args) {
+    const url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url || '');
+
+    // Branch A: tile PNGs -> autoscan pipeline
+    if (url.includes('/files/s0/tiles/') && url.endsWith('.png')) {
+        const parts = url.split('?')[0].split('/').filter(Boolean);
+        const ty = parseInt(parts[parts.length - 1], 10);
+        const tx = parseInt(parts[parts.length - 2], 10);
+        if (!isNaN(tx) && !isNaN(ty)) {
+            return origFetch.apply(this, args).then(async (res) => {
+                if (!res.ok) return res;
+                try {
+                    const blob = await res.clone().blob();
+                    const out = await intercept.processTile(tx, ty, blob);
+                    if (out) {
+                        return new Response(out, {
+                            status: res.status, statusText: res.statusText,
+                            headers: { 'Content-Type': 'image/png' }
+                        });
+                    }
+                } catch (e) {
+                    console.warn('[CC] intercept failed, passing clean tile', e);
+                }
+                return res;
+            });
+        }
+    }
+
+    // Branch B: everything else passes through; /pixel/ feeds the click spy
+    const response = origFetch.apply(this, args);
     try {
-        const url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url || '');
         if (url.includes('/pixel/')) {
-            const parts = url.split('?')[0].split('/').filter(Boolean);
-            const tileY = parseInt(parts[parts.length - 1], 10);
-            const tileX = parseInt(parts[parts.length - 2], 10);
-            const q = new URLSearchParams(url.split('?')[1] || '');
-            const px = parseInt(q.get('x'), 10);
-            const py = parseInt(q.get('y'), 10);
-            if ([tileX, tileY, px, py].every(n => !isNaN(n))) {
-                window.dispatchEvent(new CustomEvent('cc-click', { detail: { tileX, tileY, px, py } }));
-            }
+            response.then((res) => {
+                const p = url.split('?')[0].split('/').filter(Boolean);
+                const tileY = parseInt(p[p.length - 1], 10);
+                const tileX = parseInt(p[p.length - 2], 10);
+                const q = new URLSearchParams(url.split('?')[1] || '');
+                const px = parseInt(q.get('x'), 10);
+                const py = parseInt(q.get('y'), 10);
+                if ([tileX, tileY, px, py].every(n => !isNaN(n))) {
+                    window.dispatchEvent(new CustomEvent('cc-click', { detail: { tileX, tileY, px, py } }));
+                }
+                return res;
+            }).catch(() => {});
         }
     } catch (e) {}
     return response;
 };
 
 // ==========================================================
-// 2. DECODER (Alt+Click)
-//    Reads an 11-px window where the clicked pixel sits at index 3.
-//    Slides the V2 sync across offsets 0..3; falls back to V1 marker.
+// 2. MANUAL DECODER (Alt+Click)
 // ==========================================================
 const CLICK_INDEX = 3;
-const WINDOW_LEN = 11; // 3 before + clicked + 7 after = sync offset 0..3 + 4 header px
+const WINDOW_LEN = 11;
 
 function log(msg, style) {
     if (!gui.getSettings().consoleLogs) return;
@@ -70,7 +102,6 @@ function reportDecode(result, tileInfo) {
 async function attemptDecode(tileX, tileY, px, py) {
     const win = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, WINDOW_LEN);
 
-    // V2: slide the 4-px sync pattern across the window
     const off = findSyncOffset(win);
     if (off !== -1) {
         const hdr = unpackHeaderV2(win[off + 4], win[off + 5], win[off + 6], win[off + 7]);
@@ -82,7 +113,6 @@ async function attemptDecode(tileX, tileY, px, py) {
         return;
     }
 
-    // V1 fallback: Black start marker exactly at the clicked pixel
     if (win[CLICK_INDEX] === 1) {
         const header = unpackHeader(win[CLICK_INDEX + 1], win[CLICK_INDEX + 2], win[CLICK_INDEX + 3]);
         if (header.version !== VERSION) {
@@ -165,9 +195,12 @@ async function legacyMakeMessage() {
     const text = prompt('Message text:');
     if (!text) return;
 
-    await executeEncode(text, mode, 0, 1); // legacy path stays V1, all colors
+    await executeEncode(text, mode, 0, 1);
 }
 
+// ==========================================================
+// 4. HOTKEYS
+// ==========================================================
 document.addEventListener('keydown', (e) => {
     if (!e.altKey) return;
     if (isTyping(e.target)) return;
@@ -181,15 +214,28 @@ document.addEventListener('keydown', (e) => {
     if (e.code === 'KeyC') {
         gui.toggle();
     }
+    if (e.code === 'KeyL') {
+        if (e.shiftKey) { labels.clearLabels(); console.log('[CC] labels cleared'); }
+        else labels.scanAndLabel();
+        e.preventDefault();
+    }
+    if (e.code === 'KeyS' && !e.shiftKey) {
+        console.log('[CC] SUMMARY ' + JSON.stringify(intercept.DBG) +
+            ' registry=' + intercept.registry.size);
+        for (const m of intercept.registry.values()) {
+            console.log('[CC]   key rgb(' + m.color.join(',') + ') -> @' +
+                m.gx + ',' + m.gy + ' "' + m.text + '"');
+        }
+    }
 });
 
 // ==========================================================
-// 4. INIT
+// 5. INIT
 // ==========================================================
 function initApp() {
     gui.init();
     gui.onEncode(executeEncode);
-    log('[CC] Ready. Alt+Click = decode, Alt+M = legacy V1 encode, Alt+C = toggle GUI.',
+    log('[CC] Ready. Alt+Click = decode, Alt+M = legacy encode, Alt+C = GUI, Alt+L = labels, Alt+S = summary.',
         'color:#0af;font-weight:bold');
 }
 

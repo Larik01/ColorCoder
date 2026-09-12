@@ -555,6 +555,7 @@
       var { matchColor } = require_palette();
       var TILE_SIZE = 1e3;
       var TILE_BASE_URL = "https://backend.wplace.live/files/s0/tiles";
+      var RAW_FETCH = window.fetch.bind(window);
       var tileCache = /* @__PURE__ */ new Map();
       var scratch = document.createElement("canvas");
       var scratchCtx = scratch.getContext("2d", { willReadFrequently: true });
@@ -562,7 +563,7 @@
         return TILE_BASE_URL + "/" + tileX + "/" + tileY + ".png";
       }
       function fetchTileBlob(url) {
-        return fetch(url, { credentials: "omit" }).then((res) => {
+        return RAW_FETCH(url, { credentials: "omit" }).then((res) => {
           if (res.status === 404)
             return null;
           if (!res.ok)
@@ -588,6 +589,9 @@
           bitmap.close();
         tileCache.set(key, imageData);
         return imageData;
+      }
+      function seedTileCache(tileX, tileY, imageData) {
+        tileCache.set(tileX + "," + tileY, imageData);
       }
       async function readPixel2(tileX, tileY, px, py) {
         const imageData = await getTileImageData(tileX, tileY);
@@ -625,14 +629,15 @@
         tileUrl,
         getTileImageData,
         readPixel: readPixel2,
-        readSequenceHorizontal: readSequenceHorizontal2
+        readSequenceHorizontal: readSequenceHorizontal2,
+        seedTileCache
       };
     }
   });
 
-  // src/core/render.js
-  var require_render = __commonJS({
-    "src/core/render.js"(exports, module) {
+  // src/core/overlays.js
+  var require_overlays = __commonJS({
+    "src/core/overlays.js"(exports, module) {
       var { COLOR_PALETTE } = require_palette();
       function sequenceToPngBlob2(sequence) {
         const canvas = document.createElement("canvas");
@@ -652,13 +657,6 @@
           canvas.toBlob((b) => b ? resolve(b) : reject(new Error("toBlob failed")), "image/png");
         });
       }
-      module.exports = { sequenceToPngBlob: sequenceToPngBlob2 };
-    }
-  });
-
-  // src/core/templates.js
-  var require_templates = __commonJS({
-    "src/core/templates.js"(exports, module) {
       var LS_KEY = "template-overlays";
       var DB_NAME = "wplace-templates";
       var STORE = "images";
@@ -674,6 +672,12 @@
       function putImageBlob(id, blob) {
         return new Promise((resolve, reject) => {
           const req = indexedDB.open(DB_NAME);
+          req.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE)) {
+              db.createObjectStore(STORE);
+            }
+          };
           req.onerror = () => reject(req.error);
           req.onsuccess = () => {
             const db = req.result;
@@ -729,7 +733,464 @@
         window.addEventListener("pagehide", merge);
         return entry;
       }
-      module.exports = { injectTemplate: injectTemplate2, listOverlays };
+      module.exports = {
+        sequenceToPngBlob: sequenceToPngBlob2,
+        injectTemplate: injectTemplate2,
+        listOverlays,
+        LS_KEY,
+        DB_NAME,
+        STORE
+      };
+    }
+  });
+
+  // src/core/scan.js
+  var require_scan = __commonJS({
+    "src/core/scan.js"(exports, module) {
+      var { SYNC } = require_protocol();
+      function syncRGB(palette) {
+        return SYNC.map((id) => palette[id].rgb);
+      }
+      function scanSync(d, W, H, rgb) {
+        const hits = [];
+        const c0 = rgb[0], c1 = rgb[1], c2 = rgb[2], c3 = rgb[3];
+        for (let y = 0; y < H; y++) {
+          const base = y * W * 4;
+          for (let x = 0; x <= W - 4; x++) {
+            const i = base + x * 4;
+            if (d[i] === c0[0] && d[i + 1] === c0[1] && d[i + 2] === c0[2] && d[i + 3] === 255 && d[i + 4] === c1[0] && d[i + 5] === c1[1] && d[i + 6] === c1[2] && d[i + 7] === 255 && d[i + 8] === c2[0] && d[i + 9] === c2[1] && d[i + 10] === c2[2] && d[i + 11] === 255 && d[i + 12] === c3[0] && d[i + 13] === c3[1] && d[i + 14] === c3[2] && d[i + 15] === 255) {
+              hits.push(x, y);
+            }
+          }
+        }
+        return hits;
+      }
+      function syncIndexAt(d, i, rgb) {
+        if (d[i + 3] !== 255)
+          return 255;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        for (let k = 0; k < 4; k++) {
+          if (r === rgb[k][0] && g === rgb[k][1] && b === rgb[k][2])
+            return k;
+        }
+        return 255;
+      }
+      function extractEdges(d, W, H, rgb) {
+        const left = new Uint8Array(H * 3);
+        const right = new Uint8Array(H * 3);
+        for (let y = 0; y < H; y++) {
+          const base = y * W * 4;
+          for (let j = 0; j < 3; j++) {
+            left[y * 3 + j] = syncIndexAt(d, base + j * 4, rgb);
+            right[y * 3 + j] = syncIndexAt(d, base + (W - 3 + j) * 4, rgb);
+          }
+        }
+        return { left, right };
+      }
+      function seamCheck(rightA, leftB, H, tileSize) {
+        const out = [];
+        const p0 = tileSize - 3, p1 = tileSize - 2, p2 = tileSize - 1;
+        for (let y = 0; y < H; y++) {
+          const o = y * 3;
+          const w0 = rightA[o], w1 = rightA[o + 1], w2 = rightA[o + 2];
+          const w3 = leftB[o], w4 = leftB[o + 1], w5 = leftB[o + 2];
+          if (w0 === 0 && w1 === 1 && w2 === 2 && w3 === 3)
+            out.push(p0, y);
+          else if (w1 === 0 && w2 === 1 && w3 === 2 && w4 === 3)
+            out.push(p1, y);
+          else if (w2 === 0 && w3 === 1 && w4 === 2 && w5 === 3)
+            out.push(p2, y);
+        }
+        return out;
+      }
+      function edgeSuspicious(edge, H) {
+        for (let i = 0; i < H * 3; i++) {
+          if (edge[i] !== 255)
+            return true;
+        }
+        return false;
+      }
+      var TOL = 16;
+      var STEP = 2 * TOL + 2;
+      function buildKeys(palette) {
+        const grid = new Array(512);
+        const valid = [];
+        let bi = 0;
+        for (let b = 255; b >= 255 - 7 * STEP; b -= STEP) {
+          let gi = 0;
+          for (let g = 0; g <= 7 * STEP; g += STEP) {
+            let ri = 0;
+            for (let r = 1; r <= 1 + 7 * STEP; r += STEP) {
+              let bad = false;
+              for (const c of palette) {
+                if (Math.abs(r - c.rgb[0]) <= TOL && Math.abs(g - c.rgb[1]) <= TOL && Math.abs(b - c.rgb[2]) <= TOL) {
+                  bad = true;
+                  break;
+                }
+              }
+              if (!bad) {
+                const idx = (bi * 8 + gi) * 8 + ri;
+                grid[idx] = [r, g, b];
+                valid.push(idx);
+              }
+              ri++;
+            }
+            gi++;
+          }
+          bi++;
+        }
+        return { grid, valid, tol: TOL, step: STEP };
+      }
+      function keyIndexOf(space, r, g, b) {
+        const step = space.step, tol = space.tol, grid = space.grid;
+        const bi = Math.round((255 - b) / step);
+        if (bi < 0 || bi > 7 || Math.abs(b - (255 - step * bi)) > tol)
+          return -1;
+        const gi = Math.round(g / step);
+        if (gi < 0 || gi > 7 || Math.abs(g - step * gi) > tol)
+          return -1;
+        const ri = Math.round((r - 1) / step);
+        if (ri < 0 || ri > 7 || Math.abs(r - (1 + step * ri)) > tol)
+          return -1;
+        const idx = (bi * 8 + gi) * 8 + ri;
+        return grid[idx] ? idx : -1;
+      }
+      var MARKER_W = 2;
+      var MARKER_H = 2;
+      function markerRect(gx, gy) {
+        return { x: gx, y: gy - 1, w: MARKER_W, h: MARKER_H };
+      }
+      function markerClips(registry, tileX, tileY, tileSize) {
+        const clips = [];
+        for (const m of registry.values()) {
+          const lx = m.rect.x - tileX * tileSize;
+          const ly = m.rect.y - tileY * tileSize;
+          const x0 = Math.max(0, lx), y0 = Math.max(0, ly);
+          const x1 = Math.min(tileSize, lx + m.rect.w);
+          const y1 = Math.min(tileSize, ly + m.rect.h);
+          if (x0 < x1 && y0 < y1)
+            clips.push([m.color, x0, y0, x1 - x0, y1 - y0]);
+        }
+        return clips;
+      }
+      function makeRegistry(space, onEvict) {
+        const map = /* @__PURE__ */ new Map();
+        const order = [];
+        let next = 0;
+        return {
+          size: function() {
+            return map.size;
+          },
+          values: function() {
+            return map.values();
+          },
+          get: function(colorStr) {
+            return map.get(colorStr);
+          },
+          findByIndex: function(idx) {
+            const c = space.grid[idx];
+            return c ? map.get(c.join(",")) : void 0;
+          },
+          assign: function(gx, gy, payload) {
+            if (order.length >= space.valid.length) {
+              const evict = order.shift();
+              const old = map.get(evict);
+              map.delete(evict);
+              if (onEvict)
+                onEvict(evict, old);
+            }
+            const color = space.grid[space.valid[next % space.valid.length]];
+            next++;
+            const colorStr = color.join(",");
+            order.push(colorStr);
+            const entry = Object.assign(
+              { color, colorStr, rect: markerRect(gx, gy), gx, gy },
+              payload
+            );
+            map.set(colorStr, entry);
+            return entry;
+          },
+          dump: function() {
+            return Array.from(map.values());
+          }
+        };
+      }
+      module.exports = {
+        SYNC,
+        syncRGB,
+        scanSync,
+        syncIndexAt,
+        extractEdges,
+        seamCheck,
+        edgeSuspicious,
+        TOL,
+        STEP,
+        buildKeys,
+        keyIndexOf,
+        MARKER_W,
+        MARKER_H,
+        markerRect,
+        markerClips,
+        makeRegistry
+      };
+    }
+  });
+
+  // src/core/intercept.js
+  var require_intercept = __commonJS({
+    "src/core/intercept.js"(exports, module) {
+      var { COLOR_PALETTE } = require_palette();
+      var { decodeV2: decodeV22, unpackHeaderV2: unpackHeaderV22 } = require_protocol();
+      var {
+        syncRGB,
+        scanSync,
+        extractEdges,
+        seamCheck,
+        edgeSuspicious,
+        markerRect,
+        markerClips
+      } = require_scan();
+      var { TILE_SIZE, getTileImageData, readSequenceHorizontal: readSequenceHorizontal2, seedTileCache } = require_wplace();
+      var MAGIC_KEYS = [];
+      for (const g of [0, 34]) {
+        for (let r = 1; r <= 239; r += 34)
+          MAGIC_KEYS.push([r, g, 255]);
+      }
+      var nextKey = 0;
+      var registry = /* @__PURE__ */ new Map();
+      var MSGSEEN = /* @__PURE__ */ new Set();
+      var DBG = { tiles: 0, found: 0, decodeOk: 0, decodeErr: 0, painted: 0 };
+      var SYNC_RGB = syncRGB(COLOR_PALETTE);
+      var scratchCv = document.createElement("canvas");
+      var sctx = scratchCv.getContext("2d", { willReadFrequently: true });
+      var modCv = document.createElement("canvas");
+      var mctx = modCv.getContext("2d", { willReadFrequently: true });
+      async function decodeBlobToImageData(blob) {
+        const bitmap = await createImageBitmap(blob);
+        const W = bitmap.width, H = bitmap.height;
+        scratchCv.width = W;
+        scratchCv.height = H;
+        sctx.drawImage(bitmap, 0, 0);
+        if (bitmap.close)
+          bitmap.close();
+        return sctx.getImageData(0, 0, W, H);
+      }
+      async function readSeq(gx, gy, len) {
+        const ty = Math.floor(gy / TILE_SIZE);
+        const ly = gy - ty * TILE_SIZE;
+        const ids = [];
+        let cx = gx;
+        while (ids.length < len) {
+          const tx = Math.floor(cx / TILE_SIZE);
+          const lx = cx - tx * TILE_SIZE;
+          const take = Math.min(len - ids.length, TILE_SIZE - lx);
+          const chunk = await readSequenceHorizontal2(tx, ty, lx, ly, take);
+          for (let k = 0; k < chunk.length; k++)
+            ids.push(chunk[k]);
+          cx += take;
+        }
+        return ids;
+      }
+      async function tryDecodeAndRegister(gx, gy) {
+        const key = gx + "," + gy;
+        if (MSGSEEN.has(key))
+          return;
+        let head, h, seq, r;
+        try {
+          head = await readSeq(gx, gy, 8);
+          h = unpackHeaderV22(head[4], head[5], head[6], head[7]);
+          seq = await readSeq(gx, gy, 8 + h.length);
+          r = decodeV22(seq);
+        } catch (e) {
+          DBG.decodeErr++;
+          return;
+        }
+        if (!r || r.text === null) {
+          DBG.decodeErr++;
+          return;
+        }
+        MSGSEEN.add(key);
+        DBG.decodeOk++;
+        const modeStr = (r.mode === 0 ? "Lite" : "Full") + (r.free ? "-free" : "");
+        if (nextKey > 0 && nextKey % MAGIC_KEYS.length === 0) {
+          console.warn("[CC-INTERCEPT] magic key space wrapped; labels may collide");
+        }
+        const color = MAGIC_KEYS[nextKey % MAGIC_KEYS.length];
+        nextKey++;
+        registry.set(color.join(","), {
+          color,
+          rect: markerRect(gx, gy),
+          gx,
+          gy,
+          text: r.text,
+          valid: r.valid,
+          modeStr
+        });
+        const crcStr = r.valid ? "CRC OK" : "CRC BAD (stored " + r.stored + " != " + r.computed + ")";
+        console.log(
+          "%c[CC-INTERCEPT] V2 " + modeStr + " @" + gx + "," + gy + " | " + r.length + " px | " + crcStr + ' | "' + r.text + '" | magic rgb(' + color.join(",") + ")",
+          "color:#0c8;font-weight:bold"
+        );
+      }
+      async function processTile(tx, ty, blob) {
+        DBG.tiles++;
+        const img = await decodeBlobToImageData(blob);
+        seedTileCache(tx, ty, img);
+        const W = img.width, H = img.height;
+        const hits = scanSync(img.data, W, H, SYNC_RGB);
+        const edges = extractEdges(img.data, W, H, SYNC_RGB);
+        const found = [];
+        for (let i = 0; i < hits.length; i += 2) {
+          found.push([tx * TILE_SIZE + hits[i], ty * TILE_SIZE + hits[i + 1]]);
+        }
+        if (edgeSuspicious(edges.right, H)) {
+          const nb = await getTileImageData(tx + 1, ty);
+          if (nb) {
+            const nbEdges = extractEdges(nb.data, nb.width, nb.height, SYNC_RGB);
+            const sh = seamCheck(edges.right, nbEdges.left, H, TILE_SIZE);
+            for (let i = 0; i < sh.length; i += 2) {
+              found.push([tx * TILE_SIZE + sh[i], ty * TILE_SIZE + sh[i + 1]]);
+            }
+          }
+        }
+        if (edgeSuspicious(edges.left, H)) {
+          const nb = await getTileImageData(tx - 1, ty);
+          if (nb) {
+            const nbEdges = extractEdges(nb.data, nb.width, nb.height, SYNC_RGB);
+            const sh = seamCheck(nbEdges.right, edges.left, H, TILE_SIZE);
+            for (let i = 0; i < sh.length; i += 2) {
+              found.push([(tx - 1) * TILE_SIZE + sh[i], ty * TILE_SIZE + sh[i + 1]]);
+            }
+          }
+        }
+        DBG.found += found.length;
+        for (const [gx, gy] of found)
+          await tryDecodeAndRegister(gx, gy);
+        const clips = markerClips(registry, tx, ty, TILE_SIZE);
+        let outBlob = null;
+        if (clips.length > 0) {
+          modCv.width = W;
+          modCv.height = H;
+          mctx.putImageData(img, 0, 0);
+          for (const c of clips) {
+            mctx.fillStyle = "rgb(" + c[0].join(",") + ")";
+            mctx.fillRect(c[1], c[2], c[3], c[4]);
+          }
+          outBlob = await new Promise((r) => modCv.toBlob(r, "image/png"));
+          DBG.painted++;
+        }
+        return outBlob;
+      }
+      module.exports = { processTile, registry, MAGIC_KEYS, DBG };
+    }
+  });
+
+  // src/core/labels.js
+  var require_labels = __commonJS({
+    "src/core/labels.js"(exports, module) {
+      var { registry, MAGIC_KEYS } = require_intercept();
+      var pickCV = null;
+      var pickGL = null;
+      function glOf() {
+        if (!pickCV)
+          pickCV = document.querySelector(".maplibregl-canvas");
+        if (!pickCV)
+          return null;
+        if (!pickGL)
+          pickGL = pickCV.getContext("webgl2") || pickCV.getContext("webgl");
+        return pickGL;
+      }
+      function keyIndexOf(r, g, b) {
+        if (b < 239)
+          return -1;
+        let gi;
+        if (g <= 16)
+          gi = 0;
+        else if (g >= 18 && g <= 50)
+          gi = 1;
+        else
+          return -1;
+        const i = Math.round((r - 1) / 34);
+        if (i < 0 || i > 7)
+          return -1;
+        if (Math.abs(r - (1 + 34 * i)) > 16)
+          return -1;
+        return gi * 8 + i;
+      }
+      var layer = null;
+      function ensureLayer() {
+        if (layer)
+          return layer;
+        layer = document.createElement("div");
+        layer.style.cssText = "position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:99998;font:11px monospace;";
+        document.documentElement.appendChild(layer);
+        return layer;
+      }
+      function clearLabels() {
+        if (layer)
+          layer.innerHTML = "";
+      }
+      function addLabel(m, x, y) {
+        const el = document.createElement("div");
+        el.style.cssText = "position:absolute;left:0;top:0;padding:2px 5px;background:rgba(10,10,20,.85);color:#7fffd4;border:1px solid #7fffd466;border-radius:3px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+        el.textContent = (m.valid ? "" : "[CRC] ") + m.text;
+        el.title = m.modeStr + " | " + m.text;
+        ensureLayer().appendChild(el);
+        el.style.transform = "translate(" + x + "px," + y + "px) translate(6px,-110%)";
+      }
+      function scanAndLabel() {
+        const gl = glOf();
+        if (!gl) {
+          console.log("[CC-LABELS] no map canvas yet");
+          return;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+          const t0 = performance.now();
+          const px = new Uint8Array(W * H * 4);
+          gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          const t1 = performance.now();
+          let ok = 0;
+          for (let k = 1; k < 10; k++) {
+            if (px[(Math.floor(H * k / 10) * W + Math.floor(W * k / 10)) * 4 + 3] > 0)
+              ok++;
+          }
+          if (ok < 5) {
+            console.log("[CC-LABELS] invalid frame, press Alt+L again");
+            return;
+          }
+          const sx = new Float64Array(MAGIC_KEYS.length);
+          const sy = new Float64Array(MAGIC_KEYS.length);
+          const sn = new Uint32Array(MAGIC_KEYS.length);
+          for (let i = 0; i < px.length; i += 4) {
+            const ki = keyIndexOf(px[i], px[i + 1], px[i + 2]);
+            if (ki === -1)
+              continue;
+            const p = i / 4;
+            sx[ki] += p % W;
+            sy[ki] += Math.floor(p / W);
+            sn[ki]++;
+          }
+          const rect = pickCV.getBoundingClientRect();
+          clearLabels();
+          let placed = 0;
+          for (let ki = 0; ki < MAGIC_KEYS.length; ki++) {
+            if (sn[ki] < 2)
+              continue;
+            const m = registry.get(MAGIC_KEYS[ki].join(","));
+            if (!m)
+              continue;
+            const cx = sx[ki] / sn[ki];
+            const cy = sy[ki] / sn[ki];
+            const lx = rect.left + cx * rect.width / W;
+            const ly = rect.top + (H - 1 - cy) * rect.height / H;
+            addLabel(m, lx, ly);
+            placed++;
+          }
+          console.log("[CC-LABELS] " + placed + " labels placed | read=" + (t1 - t0).toFixed(1) + "ms total=" + (performance.now() - t0).toFixed(1) + "ms");
+        }));
+      }
+      module.exports = { scanAndLabel, clearLabels };
     }
   });
 
@@ -1183,24 +1644,54 @@
     PREFIX_LEN
   } = require_protocol();
   var { readSequenceHorizontal, readPixel } = require_wplace();
-  var { sequenceToPngBlob } = require_render();
-  var { injectTemplate } = require_templates();
+  var { sequenceToPngBlob, injectTemplate } = require_overlays();
+  var intercept = require_intercept();
+  var labels = require_labels();
   var gui = require_gui();
   var origFetch = window.fetch;
-  window.fetch = async function(...args) {
-    const response = await origFetch.apply(this, args);
+  window.fetch = function(...args) {
+    const url = typeof args[0] === "string" ? args[0] : args[0] && args[0].url || "";
+    if (url.includes("/files/s0/tiles/") && url.endsWith(".png")) {
+      const parts = url.split("?")[0].split("/").filter(Boolean);
+      const ty = parseInt(parts[parts.length - 1], 10);
+      const tx = parseInt(parts[parts.length - 2], 10);
+      if (!isNaN(tx) && !isNaN(ty)) {
+        return origFetch.apply(this, args).then(async (res) => {
+          if (!res.ok)
+            return res;
+          try {
+            const blob = await res.clone().blob();
+            const out = await intercept.processTile(tx, ty, blob);
+            if (out) {
+              return new Response(out, {
+                status: res.status,
+                statusText: res.statusText,
+                headers: { "Content-Type": "image/png" }
+              });
+            }
+          } catch (e) {
+            console.warn("[CC] intercept failed, passing clean tile", e);
+          }
+          return res;
+        });
+      }
+    }
+    const response = origFetch.apply(this, args);
     try {
-      const url = typeof args[0] === "string" ? args[0] : args[0] && args[0].url || "";
       if (url.includes("/pixel/")) {
-        const parts = url.split("?")[0].split("/").filter(Boolean);
-        const tileY = parseInt(parts[parts.length - 1], 10);
-        const tileX = parseInt(parts[parts.length - 2], 10);
-        const q = new URLSearchParams(url.split("?")[1] || "");
-        const px = parseInt(q.get("x"), 10);
-        const py = parseInt(q.get("y"), 10);
-        if ([tileX, tileY, px, py].every((n) => !isNaN(n))) {
-          window.dispatchEvent(new CustomEvent("cc-click", { detail: { tileX, tileY, px, py } }));
-        }
+        response.then((res) => {
+          const p = url.split("?")[0].split("/").filter(Boolean);
+          const tileY = parseInt(p[p.length - 1], 10);
+          const tileX = parseInt(p[p.length - 2], 10);
+          const q = new URLSearchParams(url.split("?")[1] || "");
+          const px = parseInt(q.get("x"), 10);
+          const py = parseInt(q.get("y"), 10);
+          if ([tileX, tileY, px, py].every((n) => !isNaN(n))) {
+            window.dispatchEvent(new CustomEvent("cc-click", { detail: { tileX, tileY, px, py } }));
+          }
+          return res;
+        }).catch(() => {
+        });
       }
     } catch (e) {
     }
@@ -1332,12 +1823,26 @@
     if (e.code === "KeyC") {
       gui.toggle();
     }
+    if (e.code === "KeyL") {
+      if (e.shiftKey) {
+        labels.clearLabels();
+        console.log("[CC] labels cleared");
+      } else
+        labels.scanAndLabel();
+      e.preventDefault();
+    }
+    if (e.code === "KeyS" && !e.shiftKey) {
+      console.log("[CC] SUMMARY " + JSON.stringify(intercept.DBG) + " registry=" + intercept.registry.size);
+      for (const m of intercept.registry.values()) {
+        console.log("[CC]   key rgb(" + m.color.join(",") + ") -> @" + m.gx + "," + m.gy + ' "' + m.text + '"');
+      }
+    }
   });
   function initApp() {
     gui.init();
     gui.onEncode(executeEncode);
     log(
-      "[CC] Ready. Alt+Click = decode, Alt+M = legacy V1 encode, Alt+C = toggle GUI.",
+      "[CC] Ready. Alt+Click = decode, Alt+M = legacy encode, Alt+C = GUI, Alt+L = labels, Alt+S = summary.",
       "color:#0af;font-weight:bold"
     );
   }

@@ -1,4 +1,4 @@
-const { COLOR_PALETTE, getColor, getColorName, pixelsToRGB, savePNG, readPNG } = require('../src/core/colors.js');
+const { COLOR_PALETTE, getColor, getColorName, pixelsToRGB, savePNG, readPNG } = require('./pngio.js');
 const { matchColor } = require('../src/core/palette.js');
 const fs = require('fs');
 const path = require('path');

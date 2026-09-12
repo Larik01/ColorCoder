@@ -10,6 +10,11 @@ const { matchColor } = require('./palette.js');
 const TILE_SIZE = 1000;
 const TILE_BASE_URL = 'https://backend.wplace.live/files/s0/tiles';
 
+// Captured at module evaluation, which runs BEFORE script.js installs the
+// intercept fetch wrap. Every read-path fetch goes through RAW_FETCH, so
+// magic colors injected into served tiles can never leak into our own reads.
+const RAW_FETCH = window.fetch.bind(window);
+
 // In-memory cache: "tileX,tileY" -> ImageData (or null for unpainted/404 tiles)
 const tileCache = new Map();
 
@@ -24,7 +29,7 @@ function tileUrl(tileX, tileY) {
 // Plain fetch: same CORS rights as the page itself, no cross-origin superpowers.
 // credentials omitted: tiles are public, we send no cookies anywhere.
 function fetchTileBlob(url) {
-    return fetch(url, { credentials: 'omit' }).then((res) => {
+    return RAW_FETCH(url, { credentials: 'omit' }).then((res) => {
         if (res.status === 404) return null; // unpainted tile
         if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
         return res.blob();
@@ -53,6 +58,12 @@ async function getTileImageData(tileX, tileY) {
     return imageData;
 }
 
+// Called by intercept.js to inject an already-decoded clean tile into the
+// cache, so each fetch is decoded once and reads always see the latest version.
+function seedTileCache(tileX, tileY, imageData) {
+    tileCache.set(tileX + ',' + tileY, imageData);
+}
+
 // Read a single pixel -> palette entry { id, name, rgb }
 async function readPixel(tileX, tileY, px, py) {
     const imageData = await getTileImageData(tileX, tileY);
@@ -68,7 +79,7 @@ async function readPixel(tileX, tileY, px, py) {
 }
 
 // Read `length` pixels left-to-right, crossing tile boundaries.
-// Returns an array of color IDs (exactly what decodeV1 expects).
+// Returns an array of color IDs (exactly what decodeV1/decodeV2 expect).
 async function readSequenceHorizontal(startTileX, startTileY, startPx, startPy, length) {
     const ids = [];
     let curTileX = startTileX;
@@ -95,5 +106,6 @@ module.exports = {
     tileUrl,
     getTileImageData,
     readPixel,
-    readSequenceHorizontal
+    readSequenceHorizontal,
+    seedTileCache
 };

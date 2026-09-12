@@ -1,7 +1,7 @@
 const { encodeV1, decodeV1, packHeader, unpackHeader, checksumFor, MAX_PAYLOAD } = require('../src/core/protocol.js');
 const { ALPHABET } = require('../src/core/alphabet.js');
 const { djb2Checksum5 } = require('../src/core/checksum.js');
-const { savePNG, readPNG } = require('../src/core/colors.js');
+const { savePNG, readPNG } = require('./pngio.js');
 const fs = require('fs');
 const path = require('path');
 
