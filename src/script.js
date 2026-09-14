@@ -7,7 +7,7 @@
 //   Alt+Shift+L              -> clear labels
 //   Alt+S                    -> counters and registry dump
 
-const { encodeV1, decodeV1, unpackHeader, VERSION,
+const { encodeV1, decodeV1, unpackHeader, VERSION, MAX_PAYLOAD_V2,
         encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/protocol.js');
 const { readSequenceHorizontal, readPixel } = require('./core/wplace.js');
 const { sequenceToPngBlob, injectTemplate } = require('./core/overlays.js');
@@ -98,29 +98,38 @@ function reportDecode(result, tileInfo) {
 async function attemptDecode(tileX, tileY, px, py) {
     const win = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, WINDOW_LEN);
 
+    // Path 1: V2 with intact sync
     const off = findSyncOffset(win);
     if (off !== -1) {
         const hdr = unpackHeaderV2(win[off + 4], win[off + 5], win[off + 6], win[off + 7]);
         const total = off + PREFIX_LEN + hdr.length;
         const seq = await readSequenceHorizontal(tileX, tileY, px - CLICK_INDEX, py, total);
         const result = decodeV2(seq.slice(off));
-        if (!result) return;
-        reportDecode(result, { tileX, tileY, px, py });
-        return;
+        if (result) { reportDecode(result, { tileX, tileY, px, py }); return; }
     }
 
+    // Path 2: V1 (black sync at click). Runs BEFORE the header fallback so a
+    // V1 message is never mistaken for a headerless V2 message.
     if (win[CLICK_INDEX] === 1) {
         const header = unpackHeader(win[CLICK_INDEX + 1], win[CLICK_INDEX + 2], win[CLICK_INDEX + 3]);
-        if (header.version !== VERSION) {
-            log.info('[CC] Unknown V1 header version ' + header.version + ', cannot decode.');
-            gui.setStatus('Unknown V1 header version ' + header.version + '.', 'error');
-            return;
+        if (header.version === VERSION) {
+            const sequence = await readSequenceHorizontal(tileX, tileY, px, py, 4 + header.length);
+            const result = decodeV1(sequence);
+            if (result) { reportDecode(result, { tileX, tileY, px, py }); return; }
         }
-        const sequence = await readSequenceHorizontal(tileX, tileY, px, py, 4 + header.length);
-        const result = decodeV1(sequence);
-        if (!result) return;
-        reportDecode(result, { tileX, tileY, px, py });
-        return;
+    }
+
+    // Path 3: V2 header fallback (sync damaged, click on header). Only reached
+    // for non-black clicks, because black clicks are consumed by the V1 path.
+    const hdrPix = await readSequenceHorizontal(tileX, tileY, px, py, 4);
+    if (hdrPix.length === 4 && hdrPix.every(p => p <= 31)) {
+        const hdr = unpackHeaderV2(hdrPix[0], hdrPix[1], hdrPix[2], hdrPix[3]);
+        if (hdr.length >= 1 && hdr.length <= MAX_PAYLOAD_V2) {
+            const SYNC = [26, 27, 24, 21];
+            const body = await readSequenceHorizontal(tileX, tileY, px, py, 4 + hdr.length);
+            const result = decodeV2(SYNC.concat(body));
+            if (result) { reportDecode(result, { tileX, tileY, px, py }); return; }
+        }
     }
 
     const c = await readPixel(tileX, tileY, px, py);

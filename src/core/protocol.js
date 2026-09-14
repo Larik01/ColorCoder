@@ -10,6 +10,7 @@
 // Lite 6-bit values 62 and 63 are intentionally unused by the encoder;
 // they decode as '?' with badChars set, acting as corruption markers.
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789 .!?-_:;'\"()[]{}@#$%&/=+<>";
+const MAX_PAYLOAD_V2 = 1023
 
 // ==========================================================
 // 2. CHECKSUMS (djb2 over binary strings)
@@ -414,7 +415,7 @@ module.exports = {
     START_MARKER, VERSION1, VERSION: VERSION1,
     encodeV1, decodeV1, packHeader, unpackHeader, checksumFor,
     // V2
-    SYNC, SYNC_LEN, HEADER_LEN, PREFIX_LEN, VERSION2,
+    SYNC, SYNC_LEN, HEADER_LEN, PREFIX_LEN, VERSION2, MAX_PAYLOAD_V2,
     encodeV2, decodeV2, packHeaderV2, unpackHeaderV2, checksumForV2,
     packBits, unpackBits, charToIdLite, idToCharLite, findSyncOffset
 };
