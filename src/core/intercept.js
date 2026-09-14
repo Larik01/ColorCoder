@@ -9,6 +9,7 @@
 
 const { COLOR_PALETTE } = require('./palette.js');
 const { decodeV2, unpackHeaderV2 } = require('./protocol.js');
+const log = require('./log.js');
 const {
     syncRGB, scanSync, extractEdges, seamCheck, edgeSuspicious,
     markerRect, markerClips
@@ -18,7 +19,7 @@ const { COUNT: KEY_COUNT, makeRegistry } = require('./keys.js');
 
 // 13,056 exact-match desert keys, FIFO registry with loud eviction.
 const registry = makeRegistry(KEY_COUNT, (idx) => {
-    console.warn('[CC-INTERCEPT] key space exhausted (' + KEY_COUNT +
+    log.warn('[CC-INTERCEPT] key space exhausted (' + KEY_COUNT +
         '); evicted oldest marker idx ' + idx);
 });
 
@@ -84,11 +85,14 @@ async function tryDecodeAndRegister(gx, gy) {
     DBG.decodeOk++;
 
     const modeStr = (r.mode === 0 ? 'Lite' : 'Full') + (r.free ? '-free' : '');
-    const entry = registry.assign(gx, gy, { text: r.text, valid: r.valid, modeStr: modeStr });
+    const entry = registry.assign(gx, gy, {
+        text: r.text, valid: r.valid, modeStr: modeStr,
+        mode: r.mode, free: r.free, result: r
+    });
 
     const crcStr = r.valid ? 'CRC OK' :
         'CRC BAD (stored ' + r.stored + ' != ' + r.computed + ')';
-    console.log('%c[CC-INTERCEPT] V2 ' + modeStr + ' @' + gx + ',' + gy +
+    log.styled('[CC-INTERCEPT] V2 ' + modeStr + ' @' + gx + ',' + gy +
         ' | ' + r.length + ' px | ' + crcStr + ' | "' + r.text +
         '" | magic rgb(' + entry.color.join(',') + ')',
         'color:#0c8;font-weight:bold');

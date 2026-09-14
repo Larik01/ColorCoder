@@ -6,11 +6,13 @@
 // the button is still down, and pointer deltas blind-follow in SCROLL too.
 // Per-track retirement: parked (off-screen border) and dormant (proved
 // absent on-screen); both stop reads, revive on border return or rescan.
-// No inertia model yet by design: coast recovery comes from reconcile scans.
-// Browser-only. No GUI dependency.
+// Labels are collapsible pins; body click dispatches cc-label-click so the
+// GUI can show the full message in its decode view.
+// Browser-only.
 
 const { COUNT, buildTable, keyIndexOfTable } = require('./keys.js');
 const { registry } = require('./intercept.js');
+const log = require('./log.js');
 
 // ---------- tuning ----------
 const WIN = 32;                  // base tracking window, device px
@@ -34,7 +36,7 @@ function isCanvas(t) {
 
 // ---------- DOM label layer ----------
 let layer = null;
-const elems = new Map(); // keyIndex -> element
+const elems = new Map(); // keyIndex -> outer element
 
 function ensureLayer() {
     if (layer) return layer;
@@ -43,17 +45,6 @@ function ensureLayer() {
         'z-index:99998;font:11px monospace;';
     document.documentElement.appendChild(layer);
     return layer;
-}
-function makeLabel(m) {
-    const el = document.createElement('div');
-    el.style.cssText = 'position:absolute;left:0;top:0;padding:2px 5px;' +
-        'background:rgba(10,10,20,.85);color:#7fffd4;border:1px solid #7fffd466;' +
-        'border-radius:3px;max-width:260px;white-space:nowrap;overflow:hidden;' +
-        'text-overflow:ellipsis;';
-    el.textContent = (m.valid ? '' : '[CRC] ') + m.text;
-    el.title = m.modeStr + ' | ' + m.text;
-    ensureLayer().appendChild(el);
-    return el;
 }
 function placeElem(el, cx, cy) {
     el.style.transform = 'translate(' + cx + 'px,' + cy + 'px) translate(6px,-110%)';
@@ -71,21 +62,62 @@ function showLayer() { if (layer) layer.style.display = ''; }
 function hideLayer() { if (layer) layer.style.display = 'none'; }
 function layerHidden() { return !!layer && layer.style.display === 'none'; }
 
+// outer element holds position; children hold the two visual states
+function buildLabelContent(outer, ki, m, collapsed) {
+    outer.innerHTML = '';
+    const pin = document.createElement('span');
+    pin.style.cssText = 'display:inline-block;width:10px;height:10px;flex:none;' +
+        'background:rgb(' + m.color.join(',') + ');border:1px solid rgba(255,255,255,.75);' +
+        'transform:rotate(45deg);cursor:pointer;pointer-events:auto;margin:2px 6px 0 0;' +
+        'vertical-align:top;';
+    pin.title = collapsed ? m.text : 'collapse label';
+    pin.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const t = tracks.get(ki);
+        if (!t) return;
+        t.collapsed = !t.collapsed;
+        buildLabelContent(outer, ki, m, t.collapsed);
+    });
+    outer.appendChild(pin);
+    if (collapsed) return;
+    const body = document.createElement('span');
+    body.style.cssText = 'display:inline-block;padding:2px 6px;background:rgba(10,10,20,.85);' +
+        'color:#7fffd4;border:1px solid #7fffd466;border-radius:3px;max-width:340px;' +
+        'max-height:140px;overflow-y:auto;white-space:pre-wrap;cursor:pointer;' +
+        'pointer-events:auto;font:11px monospace;vertical-align:top;';
+    body.textContent = (m.valid ? '' : '[CRC] ') + m.text;
+    body.title = m.modeStr + ' | click for full decode view';
+    body.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        window.dispatchEvent(new CustomEvent('cc-label-click', { detail: { ki: ki } }));
+    });
+    outer.appendChild(body);
+}
+function createLabel(ki, m, collapsed) {
+    const outer = document.createElement('div');
+    outer.style.cssText = 'position:absolute;left:0;top:0;pointer-events:none;';
+    buildLabelContent(outer, ki, m, collapsed);
+    ensureLayer().appendChild(outer);
+    elems.set(ki, outer);
+    return outer;
+}
+
 // ---------- servo state ----------
 let mode = 'off';              // 'off' | 'idle' | 'drag' | 'scroll'
 let scrollKind = 'zoom';       // 'zoom' | 'pan'
-const tracks = new Map();      // ki -> { fx, fy, miss, parked, dormant }
+const tracks = new Map();      // ki -> { fx, fy, miss, parked, dormant, collapsed }
 let table = null, tableSize = -1;
 let rr = 0;
 let lastFull = 0;
 let quietTimer = 0;
 let loopOn = false;
 let scanPending = false;
-let buttonHeld = false;        // physical M1 state, survives mode changes
-let lastPX = 0, lastPY = 0;    // last seen pointer client coords
-let dragX = 0, dragY = 0;      // last applied pointer coords for deltas
+let buttonHeld = false;
+let lastPX = 0, lastPY = 0;
+let dragX = 0, dragY = 0;
 
 function armed() { return mode !== 'off'; }
+function isArmed() { return armed(); }
 
 function refreshTable() {
     if (tableSize !== registry.size()) {
@@ -135,9 +167,9 @@ function reanchor() {
 }
 
 // ---------- full scan: reseed, revive, retire ----------
-function scanAndLabel(postMode) {
+function scanAndLabel() {
     const gl = glOf();
-    if (!gl) { console.log('[CC-LABELS] no map canvas yet'); return; }
+    if (!gl) { log.info('[CC-LABELS] no map canvas yet'); return; }
     if (scanPending) return;
     scanPending = true;
     if (quietTimer) { clearTimeout(quietTimer); quietTimer = 0; }
@@ -154,7 +186,7 @@ function scanAndLabel(postMode) {
         for (let k = 1; k < 10; k++) {
             if (px[(Math.floor(g.H * k / 10) * g.W + Math.floor(g.W * k / 10)) * 4 + 3] > 0) ok++;
         }
-        if (ok < 5) { console.log('[CC-LABELS] invalid frame, press Alt+L again'); return; }
+        if (ok < 5) { log.info('[CC-LABELS] invalid frame, press Alt+L again'); return; }
 
         refreshTable();
         const sx = new Float64Array(COUNT), sy = new Float64Array(COUNT), sn = new Uint32Array(COUNT);
@@ -181,7 +213,7 @@ function scanAndLabel(postMode) {
                 t.parked = false;
                 t.dormant = false;
                 let el = elems.get(ki);
-                if (!el) { el = makeLabel(m); elems.set(ki, el); }
+                if (!el) el = createLabel(ki, m, t.collapsed);
                 const c = cssOf(t.fx, t.fy, g);
                 placeElem(el, c[0], c[1]);
                 placed++;
@@ -198,12 +230,11 @@ function scanAndLabel(postMode) {
             const m = registry.findByIndex(ki);
             if (!m) continue;
             const fx = sx[ki] / sn[ki], fy = sy[ki] / sn[ki];
-            const t = { fx: fx, fy: fy, miss: 0, parked: false, dormant: false };
+            const t = { fx: fx, fy: fy, miss: 0, parked: false, dormant: false, collapsed: false };
             updateParked(t, g);
             tracks.set(ki, t);
             if (!t.parked) {
-                const el = makeLabel(m);
-                elems.set(ki, el);
+                const el = createLabel(ki, m, false);
                 const c = cssOf(fx, fy, g);
                 placeElem(el, c[0], c[1]);
                 placed++;
@@ -211,17 +242,17 @@ function scanAndLabel(postMode) {
         }
 
         lastFull = performance.now();
-        if (postMode === 'drag' && buttonHeld) {
+        if (buttonHeld) {
             mode = 'drag';
             reanchor();
         } else {
             mode = 'idle';
             kick();
         }
-        console.log('[CC-LABELS] ' + placed + ' labels placed, ' + dormant +
-            ' dormant | read=' + (t1 - t0).toFixed(1) +
-            'ms total=' + (performance.now() - t0).toFixed(1) + 'ms | servo armed' +
-            (mode === 'drag' ? ' (drag held)' : ''));
+        log.info('[CC-LABELS] ' + placed + ' labels placed, ' + dormant +
+        ' dormant | read=' + (t1 - t0).toFixed(1) +
+        'ms total=' + (performance.now() - t0).toFixed(1) + 'ms | servo armed' +
+        (mode === 'drag' ? ' (drag held)' : ''));
     }));
 }
 
@@ -375,7 +406,8 @@ window.addEventListener('wheel', (e) => {
 }, { passive: true });
 
 document.addEventListener('dblclick', (e) => {
-    if (armed() && isCanvas(e.target)) enterScroll('zoom');
+    if (armed() && isCanvas(e.target)) enterZoomDbl();
 });
+function enterZoomDbl() { enterScroll('zoom'); }
 
-module.exports = { scanAndLabel, clearLabels };
+module.exports = { scanAndLabel, clearLabels, isArmed };

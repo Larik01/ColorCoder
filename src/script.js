@@ -14,6 +14,7 @@ const { sequenceToPngBlob, injectTemplate } = require('./core/overlays.js');
 const intercept = require('./core/intercept.js');
 const labels = require('./core/labels.js');
 const gui = require('./core/gui.js');
+const log = require('./core/log.js');
 
 // ==========================================================
 // 1. SINGLE FETCH WRAP: tile intercept + click spy
@@ -42,7 +43,7 @@ window.fetch = function (...args) {
                         });
                     }
                 } catch (e) {
-                    console.warn('[CC] intercept failed, passing clean tile', e);
+                    log.warn('[CC] intercept failed, passing clean tile', e);
                 }
                 return res;
             });
@@ -76,25 +77,21 @@ window.fetch = function (...args) {
 const CLICK_INDEX = 3;
 const WINDOW_LEN = 11;
 
-function log(msg, style) {
-    if (!gui.getSettings().consoleLogs) return;
-    if (style) console.log('%c' + msg, style);
-    else console.log(msg);
-}
 
 function reportDecode(result, tileInfo) {
     const proto = (result.version === 2) ? 'V2' : 'V1';
     let modeStr = (result.mode === 0) ? 'Lite' : 'Full';
     if (result.version === 2) modeStr += result.free ? '-free' : '';
     if (result.valid) {
-        log('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length + ' px, crc OK)',
+        log.styled('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length + ' px, crc OK)',
             'color:#0c8;font-weight:bold');
     } else {
-        log('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length +
+        log.styled('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length +
             ' px) - CORRUPTED (stored ' + result.storedChecksum +
             ' != computed ' + result.computedChecksum + ')',
             'color:#c80;font-weight:bold');
     }
+    log.info(result.text);
     log(result.text);
     gui.showDecodeResult(result, tileInfo);
 }
@@ -116,7 +113,7 @@ async function attemptDecode(tileX, tileY, px, py) {
     if (win[CLICK_INDEX] === 1) {
         const header = unpackHeader(win[CLICK_INDEX + 1], win[CLICK_INDEX + 2], win[CLICK_INDEX + 3]);
         if (header.version !== VERSION) {
-            log('[CC] Unknown V1 header version ' + header.version + ', cannot decode.');
+            log.info('[CC] Unknown V1 header version ' + header.version + ', cannot decode.');
             gui.setStatus('Unknown V1 header version ' + header.version + '.', 'error');
             return;
         }
@@ -128,7 +125,7 @@ async function attemptDecode(tileX, tileY, px, py) {
     }
 
     const c = await readPixel(tileX, tileY, px, py);
-    log('[CC] Not a sync pixel (id ' + c.id + ' ' + c.name + '), nothing to decode here.');
+    log.info('[CC] Not a sync pixel (id ' + c.id + ' ' + c.name + '), nothing to decode here.');
     gui.setStatus('Not a message sync pixel (' + c.name + ').', 'info');
 }
 
@@ -142,10 +139,18 @@ window.addEventListener('cc-click', (e) => {
     const { tileX, tileY, px, py } = e.detail;
     attemptDecode(tileX, tileY, px, py)
         .catch(err => {
-            console.error('[CC] Decode error:', err);
+            log.err('[CC] Decode error: ' + err.message);
             gui.setStatus('Decode error: ' + err.message, 'error');
         });
 });
+
+window.addEventListener('cc-label-click', (e) => {
+    const entry = intercept.registry.findByIndex(e.detail.ki);
+    if (!entry || !entry.result) return;
+    gui.showDecodeResult(entry.result, { gx: entry.gx, gy: entry.gy });
+});
+
+// window.addEventListener('cc-label-click', e => console.log('GOT LABEL CLICK', e.detail.ki));
 
 // ==========================================================
 // 3. ENCODER (GUI + legacy Alt+M)
@@ -172,7 +177,7 @@ async function executeEncode(text, mode, free, protocol) {
         const name = tag + text.slice(0, 24);
         await injectTemplate(blob, name);
 
-        log('[CC] Injected "' + name + '" (' + enc.length + ' px payload).', 'color:#0c8;font-weight:bold');
+        log.styled('[CC] Injected "' + name + '" (' + enc.length + ' px payload).', 'color:#0c8;font-weight:bold');
 
         if (gui.getSettings().autoReload) {
             gui.setStatus('Reloading page...', 'info', 0);
@@ -182,7 +187,7 @@ async function executeEncode(text, mode, free, protocol) {
             gui.showReloadButton();
         }
     } catch (err) {
-        console.error('[CC] Inject failed:', err);
+        log.err('[CC] Inject failed: ' + err.message);
         gui.setStatus('Inject failed: ' + err.message, 'error');
     }
 }
@@ -207,7 +212,7 @@ document.addEventListener('keydown', (e) => {
 
     if (e.code === 'KeyM') {
         legacyMakeMessage().catch(err => {
-            console.error('[CC] Inject failed:', err);
+            log.err('[CC] Inject failed: ' + err.message);
             gui.setStatus('Inject failed: ' + err.message, 'error');
         });
     }
@@ -215,15 +220,15 @@ document.addEventListener('keydown', (e) => {
         gui.toggle();
     }
     if (e.code === 'KeyL') {
-        if (e.shiftKey) { labels.clearLabels(); console.log('[CC] labels cleared'); }
+        if (e.shiftKey) { labels.clearLabels(); log.info('[CC] labels cleared'); }
         else labels.scanAndLabel();
         e.preventDefault();
     }
     if (e.code === 'KeyS' && !e.shiftKey) {
-        console.log('[CC] SUMMARY ' + JSON.stringify(intercept.DBG) +
+        log.info('[CC] SUMMARY ' + JSON.stringify(intercept.DBG) +
             ' keyspace=' + intercept.KEY_COUNT + ' registry=' + intercept.registry.size());
         for (const m of intercept.registry.values()) {
-            console.log('[CC]   key rgb(' + m.color.join(',') + ') -> @' +
+            log.info('[CC]   key rgb(' + m.color.join(',') + ') -> @' +
                 m.gx + ',' + m.gy + ' "' + m.text + '"');
         }
     }
@@ -235,10 +240,21 @@ document.addEventListener('keydown', (e) => {
 function initApp() {
     gui.init();
     gui.onEncode(executeEncode);
-    log('[CC] Ready. Alt+Click = decode, Alt+M = legacy encode, Alt+C = GUI, Alt+L = labels, Alt+S = summary.',
+
+    // auto-arm labels on first discovery when the GUI flag is set
+    setInterval(() => {
+        try {
+            if (localStorage.getItem('cc-autoArm') !== '1') return;
+            if (intercept.registry.size() === 0) return;
+            if (labels.isArmed()) return;
+            labels.scanAndLabel();
+        } catch (e) {
+        }
+    }, 1000);
+
+    log.styled('[CC] Ready. Alt+Click = decode, Alt+M = legacy encode, Alt+C = GUI, Alt+L = labels, Alt+S = summary.',
         'color:#0af;font-weight:bold');
 }
-
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initApp);
 } else {

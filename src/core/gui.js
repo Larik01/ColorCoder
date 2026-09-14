@@ -1,14 +1,19 @@
 // src/core/gui.js
 // Pure DOM/CSS floating panel. No dependencies on wplace internals.
+// Adds an Autoscan section to the Settings tab with an arm/disarm button
+// (polled twice a second) and an auto-arm checkbox that writes cc-autoArm
+// to localStorage so script.js's existing interval picks it up.
 
 const { ALPHABET, encodeV1, encodeV2 } = require('./protocol.js');
+const log = require('./log.js');
+const labels = require('./labels.js');
 
 const LS_KEY = 'colorcoder-gui-state';
 
 const defaultState = {
     x: 20, y: 20, collapsed: false, tab: 'encode',
     enc: { proto: 2, mode: 0, free: 1 },
-    settings: { autoReload: false, consoleLogs: true }
+    settings: { autoReload: false, consoleLogs: true, autoArm: false }
 };
 
 function loadState() {
@@ -92,6 +97,9 @@ function css() {
             white-space: pre-wrap;
         }
         .cc-shield { position: fixed; inset: 0; z-index: 999998; cursor: move; }
+        .cc-autoscan-section {
+            border-top: 1px solid #333; padding-top: 8px; margin-top: 4px;
+        }
     `;
 }
 
@@ -191,7 +199,18 @@ function createPanel() {
         <div class="cc-row">
             <label><input type="checkbox" id="cc-logs" ${state.settings.consoleLogs ? 'checked' : ''}> Show console logs</label>
         </div>
-        <button id="cc-reset" class="cc-btn" style="background:#555; color:#fff;">Reset Panel Position</button>
+        <div class="cc-row cc-autoscan-section">
+            <div class="cc-meta" style="margin-bottom:6px;">Autoscan Labels</div>
+            <button id="cc-autoscan" class="cc-btn" style="background:#7fffd4; color:#000;">Arm labels</button>
+            <label style="display:block; margin-top:8px; color:#aaa;">
+                <input type="checkbox" id="cc-autoarm" ${state.settings.autoArm ? 'checked' : ''}> 
+                Auto-arm on first discovery
+            </label>
+            <div class="cc-meta" style="margin-top:6px; color:#666;">
+                Alt+L to arm · Alt+Shift+L to clear
+            </div>
+        </div>
+        <button id="cc-reset" class="cc-btn" style="background:#555; color:#fff; margin-top:6px;">Reset Panel Position</button>
     `;
     body.appendChild(settingsPane);
 
@@ -322,13 +341,43 @@ function bindEvents() {
         state.settings.autoReload = e.target.checked; saveState(state);
     });
     settingsPane.querySelector('#cc-logs').addEventListener('change', (e) => {
-        state.settings.consoleLogs = e.target.checked; saveState(state);
+        state.settings.consoleLogs = e.target.checked;
+        log.setMuted(!e.target.checked);
+        saveState(state);
     });
     settingsPane.querySelector('#cc-reset').addEventListener('click', () => {
         state.x = 20; state.y = 20;
         panel.style.left = '20px'; panel.style.top = '20px';
         saveState(state);
     });
+
+    // Autoscan wiring
+    const armBtn = settingsPane.querySelector('#cc-autoscan');
+    const autoArmCb = settingsPane.querySelector('#cc-autoarm');
+
+    function updateArmButton() {
+        const armed = labels.isArmed();
+        armBtn.textContent = armed ? 'Disarm labels' : 'Arm labels';
+        armBtn.style.background = armed ? '#c0392b' : '#7fffd4';
+        armBtn.style.color = '#fff';
+    }
+    armBtn.addEventListener('click', () => {
+        if (labels.isArmed()) {
+            labels.clearLabels();
+        } else {
+            labels.scanAndLabel();
+        }
+    });
+    autoArmCb.addEventListener('change', (e) => {
+        state.settings.autoArm = e.target.checked;
+        saveState(state);
+        localStorage.setItem('cc-autoArm', e.target.checked ? '1' : '0');
+    });
+    // sync checkbox from persisted state on boot
+    autoArmCb.checked = !!state.settings.autoArm;
+
+    setInterval(updateArmButton, 500);
+    updateArmButton();
 }
 
 // --- Status line (auto-dismisses) and action slot ---
@@ -372,6 +421,7 @@ function showReloadButton() {
 
 function init() {
     if (document.getElementById('cc-panel')) return;
+    log.setMuted(!state.settings.consoleLogs);
     createPanel();
 }
 
@@ -387,6 +437,9 @@ function toggle() {
 function onEncode(cb) { onEncodeCb = cb; }
 
 function showDecodeResult(result, tileInfo) {
+    // reveal the panel if it was hidden (label-click entry point)
+    show();
+
     const empty = decodePane.querySelector('#cc-decode-empty');
     const content = decodePane.querySelector('#cc-decode-content');
     empty.style.display = 'none';
