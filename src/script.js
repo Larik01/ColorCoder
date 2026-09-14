@@ -92,7 +92,6 @@ function reportDecode(result, tileInfo) {
             'color:#c80;font-weight:bold');
     }
     log.info(result.text);
-    log(result.text);
     gui.showDecodeResult(result, tileInfo);
 }
 
