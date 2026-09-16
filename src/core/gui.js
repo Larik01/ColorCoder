@@ -1,12 +1,11 @@
 // src/core/gui.js
-// Pure DOM/CSS floating panel. No dependencies on wplace internals.
-// Adds an Autoscan section to the Settings tab with an arm/disarm button
-// (polled twice a second) and an auto-arm checkbox that writes cc-autoArm
-// to localStorage so script.js's existing interval picks it up.
+// Pure DOM/CSS floating panel with encode, decode, settings, and template manager.
+// No dependencies on wplace internals.
 
 const { ALPHABET, encodeV1, encodeV2 } = require('./protocol.js');
-const log = require('./log.js');
 const labels = require('./labels.js');
+const overlays = require('./overlays.js');
+const log = require('./log.js');
 
 const LS_KEY = 'colorcoder-gui-state';
 
@@ -35,7 +34,7 @@ function saveState(state) {
 
 let state = loadState();
 let panel, header, body, statusEl, statusTimer = null;
-let encodePane, decodePane, settingsPane;
+let encodePane, decodePane, settingsPane, managerPane;
 let encodeBtn, textArea, modeSelect, protoSelect, palSelect, palRow, liteWarn, previewEl, hintEl;
 let onEncodeCb = null;
 
@@ -43,17 +42,18 @@ function css() {
     return `
         #cc-panel {
             position: fixed; z-index: 999999;
-            width: 320px; background: #1a1a1d; color: #e0e0e0;
+            width: 340px; background: #1a1a1d; color: #e0e0e0;
             border: 1px solid #444; border-radius: 6px;
             font-family: monospace; font-size: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.5);
             display: flex; flex-direction: column;
+            max-height: 90vh; overflow: hidden;
         }
         #cc-header {
             padding: 6px 10px; background: #2a2a2e; cursor: move;
             display: flex; justify-content: space-between; align-items: center;
             border-bottom: 1px solid #444; border-radius: 6px 6px 0 0;
-            user-select: none;
+            user-select: none; flex-shrink: 0;
         }
         #cc-header .title { font-weight: bold; color: #7fffd4; letter-spacing: 1px; }
         #cc-header .btns button {
@@ -61,11 +61,11 @@ function css() {
             font-size: 14px; margin-left: 8px; padding: 0 4px;
         }
         #cc-header .btns button:hover { color: #fff; }
-        #cc-body { padding: 10px; display: ${state.collapsed ? 'none' : 'block'}; }
+        #cc-body { padding: 10px; display: ${state.collapsed ? 'none' : 'block'}; overflow-y: auto; }
         .cc-tabs { display: flex; margin-bottom: 10px; border-bottom: 1px solid #444; }
         .cc-tabs button {
-            background: transparent; border: none; color: #888; padding: 4px 10px;
-            cursor: pointer; font-family: inherit; font-size: 12px;
+            background: transparent; border: none; color: #888; padding: 4px 8px;
+            cursor: pointer; font-family: inherit; font-size: 12px; flex: 1;
         }
         .cc-tabs button.active { color: #7fffd4; border-bottom: 2px solid #7fffd4; }
         .cc-pane { display: none; }
@@ -80,6 +80,7 @@ function css() {
         .cc-btn {
             background: #7fffd4; color: #000; border: none; padding: 6px 12px;
             cursor: pointer; font-weight: bold; border-radius: 3px; width: 100%;
+            font-family: inherit; font-size: 12px;
         }
         .cc-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
         .cc-status {
@@ -97,9 +98,14 @@ function css() {
             white-space: pre-wrap;
         }
         .cc-shield { position: fixed; inset: 0; z-index: 999998; cursor: move; }
-        .cc-autoscan-section {
-            border-top: 1px solid #333; padding-top: 8px; margin-top: 4px;
+        .cc-template-row {
+            padding: 6px; border-bottom: 1px solid #333;
+            display: flex; align-items: center; gap: 8px;
         }
+        .cc-template-row:last-child { border-bottom: none; }
+        .cc-template-row label { flex: 1; cursor: pointer; margin: 0; }
+        .cc-template-name { color: #e0e0e0; font-size: 11px; }
+        .cc-autoscan-section { border-top: 1px solid #333; padding-top: 8px; margin-top: 4px; }
     `;
 }
 
@@ -127,15 +133,18 @@ function createPanel() {
     body = document.createElement('div');
     body.id = 'cc-body';
 
+    // --- Tabs ---
     const tabs = document.createElement('div');
     tabs.className = 'cc-tabs';
     tabs.innerHTML = `
         <button data-tab="encode" class="${state.tab === 'encode' ? 'active' : ''}">Encode</button>
         <button data-tab="decode" class="${state.tab === 'decode' ? 'active' : ''}">Decode</button>
+        <button data-tab="manager" class="${state.tab === 'manager' ? 'active' : ''}">Manager</button>
         <button data-tab="settings" class="${state.tab === 'settings' ? 'active' : ''}">Settings</button>
     `;
     body.appendChild(tabs);
 
+    // --- Encode pane ---
     encodePane = document.createElement('div');
     encodePane.className = `cc-pane ${state.tab === 'encode' ? 'active' : ''}`;
     encodePane.dataset.tab = 'encode';
@@ -175,6 +184,7 @@ function createPanel() {
     `;
     body.appendChild(encodePane);
 
+    // --- Decode pane ---
     decodePane = document.createElement('div');
     decodePane.className = `cc-pane ${state.tab === 'decode' ? 'active' : ''}`;
     decodePane.dataset.tab = 'decode';
@@ -189,6 +199,37 @@ function createPanel() {
     `;
     body.appendChild(decodePane);
 
+    // --- Manager pane ---
+    managerPane = document.createElement('div');
+    managerPane.className = `cc-pane ${state.tab === 'manager' ? 'active' : ''}`;
+    managerPane.dataset.tab = 'manager';
+    managerPane.innerHTML = `
+        <div class="cc-row">
+            <label>Template Manager</label>
+            <div class="cc-meta">Select templates to export or remove. Import from a backup file.</div>
+        </div>
+        <div class="cc-row">
+            <div id="cc-template-list" style="max-height:280px;overflow-y:auto;border:1px solid #333;padding:4px;border-radius:3px;background:#0f0f11;"></div>
+        </div>
+        <div class="cc-row" style="display:flex;gap:6px;">
+            <button id="cc-export" class="cc-btn" style="flex:1;" disabled>Export Selected</button>
+            <button id="cc-remove" class="cc-btn" style="flex:1;background:#c0392b;" disabled>Remove Selected</button>
+        </div>
+        <div class="cc-row" style="display:flex;gap:6px;align-items:center;">
+            <input type="file" id="cc-import-file" accept=".json" style="display:none;">
+            <button id="cc-import" class="cc-btn" style="flex:1;background:#555;color:#fff;">Import from File</button>
+        </div>
+        <div class="cc-row">
+            <label style="display:flex;align-items:center;gap:6px;color:#aaa;cursor:pointer;">
+                <input type="checkbox" id="cc-import-reload" ${state.settings.autoReload ? 'checked' : ''}>
+                <span style="font-size:11px;">Reload page after import / remove</span>
+            </label>
+        </div>
+        <div id="cc-manager-status" style="margin-top:6px;"></div>
+    `;
+    body.appendChild(managerPane);
+
+    // --- Settings pane ---
     settingsPane = document.createElement('div');
     settingsPane.className = `cc-pane ${state.tab === 'settings' ? 'active' : ''}`;
     settingsPane.dataset.tab = 'settings';
@@ -203,7 +244,7 @@ function createPanel() {
             <div class="cc-meta" style="margin-bottom:6px;">Autoscan Labels</div>
             <button id="cc-autoscan" class="cc-btn" style="background:#7fffd4; color:#000;">Arm labels</button>
             <label style="display:block; margin-top:8px; color:#aaa;">
-                <input type="checkbox" id="cc-autoarm" ${state.settings.autoArm ? 'checked' : ''}> 
+                <input type="checkbox" id="cc-autoarm" ${state.settings.autoArm ? 'checked' : ''}>
                 Auto-arm on first discovery
             </label>
             <div class="cc-meta" style="margin-top:6px; color:#666;">
@@ -214,6 +255,7 @@ function createPanel() {
     `;
     body.appendChild(settingsPane);
 
+    // --- Status line ---
     statusEl = document.createElement('div');
     statusEl.className = 'cc-status';
     body.appendChild(statusEl);
@@ -225,6 +267,7 @@ function createPanel() {
 }
 
 function bindEvents() {
+    // --- Tab switching ---
     body.querySelectorAll('.cc-tabs button').forEach(btn => {
         btn.addEventListener('click', () => {
             state.tab = btn.dataset.tab;
@@ -233,9 +276,12 @@ function bindEvents() {
             body.querySelectorAll('.cc-pane').forEach(p => p.classList.remove('active'));
             body.querySelector(`.cc-pane[data-tab="${state.tab}"]`).classList.add('active');
             saveState(state);
+            if (state.tab === 'manager') refreshTemplateList();
         });
     });
 
+
+    // --- Header controls ---
     header.querySelector('#cc-collapse').addEventListener('click', () => {
         state.collapsed = !state.collapsed;
         body.style.display = state.collapsed ? 'none' : 'block';
@@ -246,6 +292,7 @@ function bindEvents() {
         panel.style.display = 'none';
     });
 
+    // --- Drag ---
     let drag = null;
     header.addEventListener('mousedown', (e) => {
         if (e.target.closest('button')) return;
@@ -270,7 +317,7 @@ function bindEvents() {
         }
     });
 
-    // Encode pane wiring
+    // --- Encode pane wiring ---
     protoSelect = encodePane.querySelector('#cc-proto');
     modeSelect = encodePane.querySelector('#cc-mode');
     palSelect = encodePane.querySelector('#cc-pal');
@@ -336,9 +383,146 @@ function bindEvents() {
         }
     });
 
-    // Settings wiring
+    // --- Template Manager wiring ---
+    const templateList = managerPane.querySelector('#cc-template-list');
+    const exportBtn = managerPane.querySelector('#cc-export');
+    const removeBtn = managerPane.querySelector('#cc-remove');
+    const importBtn = managerPane.querySelector('#cc-import');
+    const importFile = managerPane.querySelector('#cc-import-file');
+    const importReload = managerPane.querySelector('#cc-import-reload');
+    const managerStatus = managerPane.querySelector('#cc-manager-status');
+
+    window.refreshTemplateList = function() {
+        const templates = overlays.getAllTemplates();
+        templateList.innerHTML = '';
+
+        if (templates.length === 0) {
+            templateList.innerHTML = '<div style="color:#555;text-align:center;padding:16px;">No templates found</div>';
+            exportBtn.disabled = true;
+            removeBtn.disabled = true;
+            exportBtn.textContent = 'Export Selected';
+            removeBtn.textContent = 'Remove Selected';
+            return;
+        }
+
+        templates.forEach(t => {
+            const row = document.createElement('div');
+            row.className = 'cc-template-row';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = true;
+            checkbox.dataset.id = t.id;
+            checkbox.addEventListener('change', updateSelectionButtons);
+
+            const label = document.createElement('label');
+            label.innerHTML = `
+                <div class="cc-template-name">${escapeHtml(t.name)}</div>
+                <div class="cc-meta">${t.originalWidth}×${t.originalHeight} px · ${new Date(t.updatedAt || Date.now()).toLocaleDateString()}</div>
+            `;
+
+            row.appendChild(checkbox);
+            row.appendChild(label);
+            templateList.appendChild(row);
+        });
+
+        updateSelectionButtons();
+    };
+
+    function updateSelectionButtons() {
+        const checked = templateList.querySelectorAll('input[type="checkbox"]:checked');
+        const count = checked.length;
+        exportBtn.disabled = count === 0;
+        removeBtn.disabled = count === 0;
+        exportBtn.textContent = count > 0 ? `Export Selected (${count})` : 'Export Selected';
+        removeBtn.textContent = count > 0 ? `Remove Selected (${count})` : 'Remove Selected';
+    }
+
+    function getSelectedIds() {
+        const checked = templateList.querySelectorAll('input[type="checkbox"]:checked');
+        return Array.from(checked).map(cb => cb.dataset.id);
+    }
+
+    function setManagerStatus(msg, color) {
+        managerStatus.textContent = msg;
+        managerStatus.style.color = color || '#e0e0e0';
+        managerStatus.style.fontSize = '11px';
+        managerStatus.style.marginTop = '6px';
+    }
+
+    exportBtn.addEventListener('click', async () => {
+        const ids = getSelectedIds();
+        if (ids.length === 0) return;
+        setManagerStatus('Exporting...', '#7fffd4');
+        exportBtn.disabled = true;
+        try {
+            const count = await overlays.exportTemplates(ids);
+            setManagerStatus(`Exported ${count} template(s). Check your downloads.`, '#27ae60');
+        } catch (err) {
+            log.err('[CC-Manager] Export failed: ' + err.message);
+            setManagerStatus('Export failed: ' + err.message, '#e74c3c');
+        }
+        exportBtn.disabled = false;
+
+
+    });
+
+    removeBtn.addEventListener('click', async () => {
+        const ids = getSelectedIds();
+        if (ids.length === 0) return;
+
+        const names = ids.map(id => {
+            const t = overlays.getAllTemplates().find(o => o.id === id);
+            return t ? t.name : id;
+        });
+        const msg = `Remove ${ids.length} template(s)?\n\n${names.join('\n')}\n\nThis cannot be undone.`;
+        if (!confirm(msg)) return;
+
+        setManagerStatus('Removing...', '#7fffd4');
+        removeBtn.disabled = true;
+        try {
+            const count = await overlays.removeTemplates(ids);
+            setManagerStatus(`Removed ${count} template(s).`, '#27ae60');
+            refreshTemplateList();
+            if (importReload.checked) {
+                setManagerStatus('Removed. Reloading in 2s...', '#7fffd4');
+                setTimeout(() => location.reload(), 2000);
+            }
+        } catch (err) {
+            log.err('[CC-Manager] Remove failed: ' + err.message);
+            setManagerStatus('Remove failed: ' + err.message, '#e74c3c');
+        }
+        removeBtn.disabled = false;
+    });
+
+    importBtn.addEventListener('click', () => importFile.click());
+
+    importFile.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        setManagerStatus('Importing...', '#7fffd4');
+        importBtn.disabled = true;
+        try {
+            const count = await overlays.importTemplates(file);
+            setManagerStatus(`Imported ${count} template(s).`, '#27ae60');
+            refreshTemplateList();
+            if (importReload.checked) {
+                setManagerStatus('Reloading in 2s...', '#7fffd4');
+                setTimeout(() => location.reload(), 2000);
+            }
+        } catch (err) {
+            log.err('[CC-Manager] Import failed: ' + err.message);
+            setManagerStatus('Import failed: ' + err.message, '#e74c3c');
+        }
+        importBtn.disabled = false;
+        importFile.value = '';
+    });
+
+    // --- Settings wiring ---
     settingsPane.querySelector('#cc-autoreload').addEventListener('change', (e) => {
-        state.settings.autoReload = e.target.checked; saveState(state);
+        state.settings.autoReload = e.target.checked;
+        saveState(state);
     });
     settingsPane.querySelector('#cc-logs').addEventListener('change', (e) => {
         state.settings.consoleLogs = e.target.checked;
@@ -351,7 +535,7 @@ function bindEvents() {
         saveState(state);
     });
 
-    // Autoscan wiring
+    // --- Autoscan wiring ---
     const armBtn = settingsPane.querySelector('#cc-autoscan');
     const autoArmCb = settingsPane.querySelector('#cc-autoarm');
 
@@ -373,14 +557,15 @@ function bindEvents() {
         saveState(state);
         localStorage.setItem('cc-autoArm', e.target.checked ? '1' : '0');
     });
-    // sync checkbox from persisted state on boot
     autoArmCb.checked = !!state.settings.autoArm;
 
     setInterval(updateArmButton, 500);
     updateArmButton();
+
+    if (state.tab === 'manager') refreshTemplateList();
 }
 
-// --- Status line (auto-dismisses) and action slot ---
+// --- Status line and action slot ---
 
 function setStatus(msg, type = 'info', timeout = 5000) {
     if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
@@ -427,6 +612,7 @@ function init() {
 
 function show() {
     if (panel) panel.style.display = 'flex';
+    if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
 }
 
 function toggle() {
@@ -437,7 +623,6 @@ function toggle() {
 function onEncode(cb) { onEncodeCb = cb; }
 
 function showDecodeResult(result, tileInfo) {
-    // reveal the panel if it was hidden (label-click entry point)
     show();
 
     const empty = decodePane.querySelector('#cc-decode-empty');

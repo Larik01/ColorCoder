@@ -1,6 +1,6 @@
 {
   "name": "color-coder",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "description": "Color encoder/decoder for wplace.live",
   "scripts": {
     "test": "node tests/test-colors.js && node tests/test-v1.js && node tests/test-v2.js && node tests/test-scan.js && node tests/test-keys.js",
