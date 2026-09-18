@@ -9,21 +9,40 @@
 
 const { encodeV1, decodeV1, unpackHeader, VERSION, MAX_PAYLOAD_V2,
         encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/protocol.js');
-const { readSequenceHorizontal, readPixel } = require('./core/wplace.js');
+const { readSequenceHorizontal, readPixel, noteProfile, profileSeen, hasColor } = require('./core/wplace.js');
 const { sequenceToPngBlob, injectTemplate } = require('./core/overlays.js');
+const { COLOR_PALETTE } = require('./core/palette.js');
 const intercept = require('./core/intercept.js');
 const labels = require('./core/labels.js');
 const gui = require('./core/gui.js');
 const log = require('./core/log.js');
 
 // ==========================================================
-// 1. SINGLE FETCH WRAP: tile intercept + click spy
+// 1. SINGLE FETCH WRAP: tile intercept + click spy + profile capture
 //    wplace.js captured RAW_FETCH at module eval, before this wrap exists,
 //    so all of our own reads bypass everything below.
 // ==========================================================
 const origFetch = window.fetch;
 window.fetch = function (...args) {
     const url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url || '');
+
+    // Branch P: wplace's own /me response feeds the palette availability check.
+    // Passive only: we never issue this request ourselves.
+    const pathOnly = url.split('?')[0];
+    if (url.includes('wplace.live') && pathOnly.endsWith('/me')) {
+        return origFetch.apply(this, args).then((res) => {
+            if (res.ok) {
+                res.clone().json().then((j) => {
+                    if (noteProfile(j)) {
+                        log.info('[CC-PROFILE] extras unlocked ' +
+                            require('./core/wplace.js').extraUnlockedIds().length + '/32, bitmap ' +
+                            j.extraColorsBitmap);
+                    }
+                }).catch(() => {});
+            }
+            return res;
+        });
+    }
 
     // Branch A: tile PNGs -> autoscan pipeline
     if (url.includes('/files/s0/tiles/') && url.endsWith('.png')) {
@@ -167,7 +186,7 @@ function isTyping(target) {
     return target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 }
 
-async function executeEncode(text, mode, free, protocol) {
+async function executeEncode(text, mode, free, protocol, force = false) {
     gui.clearAction();
     gui.setStatus('Encoding and generating PNG...', 'info');
 
@@ -175,6 +194,23 @@ async function executeEncode(text, mode, free, protocol) {
     if (!enc) {
         gui.setStatus('Encode failed - character not in Lite alphabet, or message too long.', 'error');
         return;
+    }
+
+
+    // Guard: premium colors the account lacks block injection unless forced.
+    if (!force && profileSeen()) {
+        const missingIds = [];
+        for (const id of enc.fullSequence) {
+            if (id >= 32 && !hasColor(id) && !missingIds.includes(id)) {
+                missingIds.push(id);
+            }
+        }
+        if (missingIds.length > 0) {
+            gui.showMissingColorsWarning(missingIds, () => {
+                executeEncode(text, mode, free, protocol, true);
+            });
+            return;
+        }
     }
 
     try {

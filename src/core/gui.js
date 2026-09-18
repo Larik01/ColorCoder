@@ -1,10 +1,11 @@
 // src/core/gui.js
-// Pure DOM/CSS floating panel with encode, decode, settings, and template manager.
-// No dependencies on wplace internals.
+// Pure DOM/CSS floating panel: encode, decode, overlays manager, settings.
+// Fetches user profile on init to determine palette availability.
 
 const { ALPHABET, encodeV1, encodeV2 } = require('./protocol.js');
 const labels = require('./labels.js');
 const overlays = require('./overlays.js');
+const wplace = require('./wplace.js');
 const log = require('./log.js');
 
 const LS_KEY = 'colorcoder-gui-state';
@@ -35,7 +36,7 @@ function saveState(state) {
 let state = loadState();
 let panel, header, body, statusEl, statusTimer = null;
 let encodePane, decodePane, settingsPane, managerPane;
-let encodeBtn, textArea, modeSelect, protoSelect, palSelect, palRow, liteWarn, previewEl, hintEl;
+let encodeBtn, textArea, liteWarn, previewEl, hintEl;
 let onEncodeCb = null;
 
 function css() {
@@ -106,6 +107,37 @@ function css() {
         .cc-template-row label { flex: 1; cursor: pointer; margin: 0; }
         .cc-template-name { color: #e0e0e0; font-size: 11px; }
         .cc-autoscan-section { border-top: 1px solid #333; padding-top: 8px; margin-top: 4px; }
+        
+        /* Circle toggle groups */
+        .cc-toggle-group {
+            display: flex;
+            border: 1px solid #444;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #0f0f11;
+        }
+        .cc-toggle-group input[type=radio] {
+            display: none;
+        }
+        .cc-toggle-group label {
+            flex: 1;
+            padding: 6px 8px;
+            text-align: center;
+            cursor: pointer;
+            color: #888;
+            transition: background 0.15s, color 0.15s;
+            border-right: 1px solid #444;
+            margin: 0;
+            font-size: 11px;
+        }
+        .cc-toggle-group label:last-of-type {
+            border-right: none;
+        }
+        .cc-toggle-group input[type=radio]:checked + label {
+            background: #7fffd4;
+            color: #000;
+            font-weight: bold;
+        }
     `;
 }
 
@@ -133,42 +165,38 @@ function createPanel() {
     body = document.createElement('div');
     body.id = 'cc-body';
 
-    // --- Tabs ---
     const tabs = document.createElement('div');
     tabs.className = 'cc-tabs';
     tabs.innerHTML = `
         <button data-tab="encode" class="${state.tab === 'encode' ? 'active' : ''}">Encode</button>
         <button data-tab="decode" class="${state.tab === 'decode' ? 'active' : ''}">Decode</button>
-        <button data-tab="manager" class="${state.tab === 'manager' ? 'active' : ''}">Manager</button>
+        <button data-tab="manager" class="${state.tab === 'manager' ? 'active' : ''}">Overlays</button>
         <button data-tab="settings" class="${state.tab === 'settings' ? 'active' : ''}">Settings</button>
     `;
     body.appendChild(tabs);
 
-    // --- Encode pane ---
     encodePane = document.createElement('div');
     encodePane.className = `cc-pane ${state.tab === 'encode' ? 'active' : ''}`;
     encodePane.dataset.tab = 'encode';
     encodePane.innerHTML = `
         <div class="cc-row">
-            <label>Protocol</label>
-            <select id="cc-proto">
-                <option value="1">V1 (legacy)</option>
-                <option value="2">V2</option>
-            </select>
-        </div>
-        <div class="cc-row">
             <label>Mode</label>
-            <select id="cc-mode">
-                <option value="0">Lite (dictionary chars)</option>
-                <option value="1">Full (any UTF-8)</option>
-            </select>
+            <div class="cc-toggle-group">
+                <input type="radio" name="cc-mode" id="cc-mode-lite" value="0">
+                <label for="cc-mode-lite">Lite</label>
+                <input type="radio" name="cc-mode" id="cc-mode-full" value="1">
+                <label for="cc-mode-full">Full</label>
+            </div>
         </div>
         <div class="cc-row" id="cc-palrow">
             <label>Palette</label>
-            <select id="cc-pal">
-                <option value="1">Free colors (32, 5-bit)</option>
-                <option value="0">All colors (64, 6-bit)</option>
-            </select>
+            <div class="cc-toggle-group">
+                <input type="radio" name="cc-pal" id="cc-pal-free" value="1">
+                <label for="cc-pal-free">Free colors (32)</label>
+                <input type="radio" name="cc-pal" id="cc-pal-all" value="0">
+                <label for="cc-pal-all">All colors (64)</label>
+            </div>
+            <div id="cc-pal-note" class="cc-meta" style="display:none; color:#e67e22; margin-top:4px;"></div>
         </div>
         <div class="cc-row">
             <label>Message Text</label>
@@ -184,7 +212,6 @@ function createPanel() {
     `;
     body.appendChild(encodePane);
 
-    // --- Decode pane ---
     decodePane = document.createElement('div');
     decodePane.className = `cc-pane ${state.tab === 'decode' ? 'active' : ''}`;
     decodePane.dataset.tab = 'decode';
@@ -199,14 +226,17 @@ function createPanel() {
     `;
     body.appendChild(decodePane);
 
-    // --- Manager pane ---
     managerPane = document.createElement('div');
     managerPane.className = `cc-pane ${state.tab === 'manager' ? 'active' : ''}`;
     managerPane.dataset.tab = 'manager';
     managerPane.innerHTML = `
         <div class="cc-row">
-            <label>Template Manager</label>
-            <div class="cc-meta">Select templates to export or remove. Import from a backup file.</div>
+            <label>Overlay Manager</label>
+            <div class="cc-meta">Export, import, remove wplace overlays. Import skips names that already exist.</div>
+        </div>
+        <div class="cc-row" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+            <input type="checkbox" id="cc-sel-all" checked>
+            <label for="cc-sel-all" id="cc-sel-all-label" style="margin:0;color:#aaa;cursor:pointer;">Select all</label>
         </div>
         <div class="cc-row">
             <div id="cc-template-list" style="max-height:280px;overflow-y:auto;border:1px solid #333;padding:4px;border-radius:3px;background:#0f0f11;"></div>
@@ -229,7 +259,6 @@ function createPanel() {
     `;
     body.appendChild(managerPane);
 
-    // --- Settings pane ---
     settingsPane = document.createElement('div');
     settingsPane.className = `cc-pane ${state.tab === 'settings' ? 'active' : ''}`;
     settingsPane.dataset.tab = 'settings';
@@ -255,7 +284,6 @@ function createPanel() {
     `;
     body.appendChild(settingsPane);
 
-    // --- Status line ---
     statusEl = document.createElement('div');
     statusEl.className = 'cc-status';
     body.appendChild(statusEl);
@@ -267,7 +295,6 @@ function createPanel() {
 }
 
 function bindEvents() {
-    // --- Tab switching ---
     body.querySelectorAll('.cc-tabs button').forEach(btn => {
         btn.addEventListener('click', () => {
             state.tab = btn.dataset.tab;
@@ -280,8 +307,6 @@ function bindEvents() {
         });
     });
 
-
-    // --- Header controls ---
     header.querySelector('#cc-collapse').addEventListener('click', () => {
         state.collapsed = !state.collapsed;
         body.style.display = state.collapsed ? 'none' : 'block';
@@ -292,7 +317,6 @@ function bindEvents() {
         panel.style.display = 'none';
     });
 
-    // --- Drag ---
     let drag = null;
     header.addEventListener('mousedown', (e) => {
         if (e.target.closest('button')) return;
@@ -317,30 +341,42 @@ function bindEvents() {
         }
     });
 
-    // --- Encode pane wiring ---
-    protoSelect = encodePane.querySelector('#cc-proto');
-    modeSelect = encodePane.querySelector('#cc-mode');
-    palSelect = encodePane.querySelector('#cc-pal');
-    palRow = encodePane.querySelector('#cc-palrow');
+    // --- Encode pane ---
+    const modeLite = encodePane.querySelector('#cc-mode-lite');
+    const modeFull = encodePane.querySelector('#cc-mode-full');
+    const palFree = encodePane.querySelector('#cc-pal-free');
+    const palAll = encodePane.querySelector('#cc-pal-all');
+
     textArea = encodePane.querySelector('#cc-text');
     encodeBtn = encodePane.querySelector('#cc-encode');
     liteWarn = encodePane.querySelector('#cc-litewarn');
     previewEl = encodePane.querySelector('#cc-preview');
     hintEl = encodePane.querySelector('#cc-hint');
 
-    protoSelect.value = String(state.enc.proto);
-    modeSelect.value = String(state.enc.mode);
-    palSelect.value = String(state.enc.free);
+    if (state.enc.mode === 1) modeFull.checked = true; else modeLite.checked = true;
+    if (state.enc.free === 1) palFree.checked = true; else palAll.checked = true;
 
     function refreshEncodePane() {
-        const proto = parseInt(protoSelect.value, 10);
-        const mode = parseInt(modeSelect.value, 10);
-        const free = parseInt(palSelect.value, 10);
+        const proto = 2;
+        const mode = parseInt(encodePane.querySelector('input[name="cc-mode"]:checked').value, 10);
+        const free = parseInt(encodePane.querySelector('input[name="cc-pal"]:checked').value, 10);
         state.enc = { proto, mode, free };
         saveState(state);
 
-        palRow.style.display = (proto === 2) ? '' : 'none';
-        hintEl.style.display = (proto === 2 && mode === 0) ? '' : 'none';
+        hintEl.style.display = (mode === 0) ? '' : 'none';
+
+        const palNote = encodePane.querySelector('#cc-pal-note');
+        if (wplace.profileSeen()) {
+            const missing = wplace.missingExtraCount();
+            if (missing > 0) {
+                palNote.textContent = missing + '/32 premium colors are not unlocked, free mode recommended.';
+                palNote.style.display = 'block';
+            } else {
+                palNote.style.display = 'none';
+            }
+        } else {
+            palNote.style.display = 'none';
+        }
 
         const text = textArea.value;
         const bad = [];
@@ -358,21 +394,22 @@ function bindEvents() {
         }
         liteWarn.style.display = 'none';
 
-        const enc = (proto === 2) ? encodeV2(text, mode, free) : encodeV1(text, mode);
+        const enc = encodeV2(text, mode, free);
         if (!enc) {
             previewEl.textContent = 'Message too long: payload exceeds 1023 px.';
             encodeBtn.disabled = true;
             return;
         }
-        const prefix = (proto === 2) ? 8 : 4;
+        const prefix = 8;
         previewEl.textContent = 'Payload ' + enc.length + ' px + ' + prefix +
             ' px prefix = ' + (enc.length + prefix) + ' px total.';
         encodeBtn.disabled = false;
     }
 
-    protoSelect.addEventListener('change', refreshEncodePane);
-    modeSelect.addEventListener('change', refreshEncodePane);
-    palSelect.addEventListener('change', refreshEncodePane);
+    modeLite.addEventListener('change', refreshEncodePane);
+    modeFull.addEventListener('change', refreshEncodePane);
+    palFree.addEventListener('change', refreshEncodePane);
+    palAll.addEventListener('change', refreshEncodePane);
     textArea.addEventListener('input', refreshEncodePane);
     refreshEncodePane();
 
@@ -383,7 +420,7 @@ function bindEvents() {
         }
     });
 
-    // --- Template Manager wiring ---
+    // --- Overlays manager ---
     const templateList = managerPane.querySelector('#cc-template-list');
     const exportBtn = managerPane.querySelector('#cc-export');
     const removeBtn = managerPane.querySelector('#cc-remove');
@@ -391,6 +428,21 @@ function bindEvents() {
     const importFile = managerPane.querySelector('#cc-import-file');
     const importReload = managerPane.querySelector('#cc-import-reload');
     const managerStatus = managerPane.querySelector('#cc-manager-status');
+    const selAll = managerPane.querySelector('#cc-sel-all');
+    const selAllLabel = managerPane.querySelector('#cc-sel-all-label');
+
+    function updateSelectionButtons() {
+        const all = templateList.querySelectorAll('input[type="checkbox"]');
+        const checked = templateList.querySelectorAll('input[type="checkbox"]:checked');
+        const count = checked.length;
+        exportBtn.disabled = count === 0;
+        removeBtn.disabled = count === 0;
+        exportBtn.textContent = count > 0 ? 'Export Selected (' + count + ')' : 'Export Selected';
+        removeBtn.textContent = count > 0 ? 'Remove Selected (' + count + ')' : 'Remove Selected';
+        selAll.checked = count > 0 && count === all.length;
+        selAll.indeterminate = count > 0 && count < all.length;
+        selAllLabel.textContent = 'Select all (' + count + '/' + all.length + ')';
+    }
 
     window.refreshTemplateList = function() {
         const templates = overlays.getAllTemplates();
@@ -398,12 +450,17 @@ function bindEvents() {
 
         if (templates.length === 0) {
             templateList.innerHTML = '<div style="color:#555;text-align:center;padding:16px;">No templates found</div>';
+            selAll.checked = false;
+            selAll.indeterminate = false;
+            selAllLabel.textContent = 'Select all (0/0)';
             exportBtn.disabled = true;
             removeBtn.disabled = true;
             exportBtn.textContent = 'Export Selected';
             removeBtn.textContent = 'Remove Selected';
             return;
         }
+
+        templates.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
         templates.forEach(t => {
             const row = document.createElement('div');
@@ -415,10 +472,15 @@ function bindEvents() {
             checkbox.dataset.id = t.id;
             checkbox.addEventListener('change', updateSelectionButtons);
 
+            const shortId = (t.id || '').slice(0, 8);
+            const dt = new Date(t.updatedAt || Date.now());
+            const when = dt.toLocaleDateString() + ' ' +
+                dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
             const label = document.createElement('label');
             label.innerHTML = `
                 <div class="cc-template-name">${escapeHtml(t.name)}</div>
-                <div class="cc-meta">${t.originalWidth}×${t.originalHeight} px · ${new Date(t.updatedAt || Date.now()).toLocaleDateString()}</div>
+                <div class="cc-meta">${t.originalWidth}×${t.originalHeight} px · ${when} · id ${shortId}</div>
             `;
 
             row.appendChild(checkbox);
@@ -428,15 +490,6 @@ function bindEvents() {
 
         updateSelectionButtons();
     };
-
-    function updateSelectionButtons() {
-        const checked = templateList.querySelectorAll('input[type="checkbox"]:checked');
-        const count = checked.length;
-        exportBtn.disabled = count === 0;
-        removeBtn.disabled = count === 0;
-        exportBtn.textContent = count > 0 ? `Export Selected (${count})` : 'Export Selected';
-        removeBtn.textContent = count > 0 ? `Remove Selected (${count})` : 'Remove Selected';
-    }
 
     function getSelectedIds() {
         const checked = templateList.querySelectorAll('input[type="checkbox"]:checked');
@@ -450,6 +503,13 @@ function bindEvents() {
         managerStatus.style.marginTop = '6px';
     }
 
+    selAll.addEventListener('change', () => {
+        templateList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            cb.checked = selAll.checked;
+        });
+        updateSelectionButtons();
+    });
+
     exportBtn.addEventListener('click', async () => {
         const ids = getSelectedIds();
         if (ids.length === 0) return;
@@ -457,14 +517,13 @@ function bindEvents() {
         exportBtn.disabled = true;
         try {
             const count = await overlays.exportTemplates(ids);
-            setManagerStatus(`Exported ${count} template(s). Check your downloads.`, '#27ae60');
+            setManagerStatus('Exported ' + count + ' template(s). Check your downloads.', '#27ae60');
         } catch (err) {
             log.err('[CC-Manager] Export failed: ' + err.message);
             setManagerStatus('Export failed: ' + err.message, '#e74c3c');
         }
         exportBtn.disabled = false;
-
-
+        updateSelectionButtons();
     });
 
     removeBtn.addEventListener('click', async () => {
@@ -475,14 +534,14 @@ function bindEvents() {
             const t = overlays.getAllTemplates().find(o => o.id === id);
             return t ? t.name : id;
         });
-        const msg = `Remove ${ids.length} template(s)?\n\n${names.join('\n')}\n\nThis cannot be undone.`;
+        const msg = 'Remove ' + ids.length + ' template(s)?\n\n' + names.join('\n') + '\n\nThis cannot be undone.';
         if (!confirm(msg)) return;
 
         setManagerStatus('Removing...', '#7fffd4');
         removeBtn.disabled = true;
         try {
             const count = await overlays.removeTemplates(ids);
-            setManagerStatus(`Removed ${count} template(s).`, '#27ae60');
+            setManagerStatus('Removed ' + count + ' template(s).', '#27ae60');
             refreshTemplateList();
             if (importReload.checked) {
                 setManagerStatus('Removed. Reloading in 2s...', '#7fffd4');
@@ -500,14 +559,13 @@ function bindEvents() {
     importFile.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
         setManagerStatus('Importing...', '#7fffd4');
         importBtn.disabled = true;
         try {
             const count = await overlays.importTemplates(file);
-            setManagerStatus(`Imported ${count} template(s).`, '#27ae60');
+            setManagerStatus('Imported ' + count + '. Names already present were skipped.', '#27ae60');
             refreshTemplateList();
-            if (importReload.checked) {
+            if (importReload.checked && count > 0) {
                 setManagerStatus('Reloading in 2s...', '#7fffd4');
                 setTimeout(() => location.reload(), 2000);
             }
@@ -519,7 +577,7 @@ function bindEvents() {
         importFile.value = '';
     });
 
-    // --- Settings wiring ---
+    // --- Settings ---
     settingsPane.querySelector('#cc-autoreload').addEventListener('change', (e) => {
         state.settings.autoReload = e.target.checked;
         saveState(state);
@@ -535,7 +593,7 @@ function bindEvents() {
         saveState(state);
     });
 
-    // --- Autoscan wiring ---
+    // --- Autoscan ---
     const armBtn = settingsPane.querySelector('#cc-autoscan');
     const autoArmCb = settingsPane.querySelector('#cc-autoarm');
 
@@ -602,6 +660,48 @@ function showReloadButton() {
     slot.appendChild(btn);
 }
 
+function showMissingColorsWarning(missingIds, onForce) {
+    const slot = actionSlot();
+    if (!slot) return;
+    slot.innerHTML = '';
+
+    const { COLOR_PALETTE } = require('./palette.js');
+
+    const list = document.createElement('div');
+    list.style.cssText = 'background:#0f0f11; padding:6px; border:1px solid #e67e22; border-radius:3px; margin-bottom:6px;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'color:#e67e22; font-size:11px; margin-bottom:4px;';
+    header.textContent = 'Uses colors you have not unlocked:';
+    list.appendChild(header);
+
+    for (const id of missingIds) {
+        const c = COLOR_PALETTE[id];
+        if (!c) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px; color:#e0e0e0;';
+
+        const swatch = document.createElement('div');
+        swatch.style.cssText = `width:12px; height:12px; border-radius:2px; border:1px solid #444; background:rgb(${c.rgb.join(',')}); flex-shrink:0;`;
+
+        const name = document.createElement('span');
+        name.textContent = c.name;
+
+        row.appendChild(swatch);
+        row.appendChild(name);
+        list.appendChild(row);
+    }
+    slot.appendChild(list);
+
+    const btn = document.createElement('button');
+    btn.className = 'cc-btn';
+    btn.style.background = '#e67e22';
+    btn.style.color = '#fff';
+    btn.textContent = 'Create anyway';
+    btn.onclick = onForce;
+    slot.appendChild(btn);
+}
+
 // --- Public API ---
 
 function init() {
@@ -618,6 +718,9 @@ function show() {
 function toggle() {
     if (!panel) init();
     else panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+    if (panel.style.display === 'flex' && state.tab === 'manager' && window.refreshTemplateList) {
+        window.refreshTemplateList();
+    }
 }
 
 function onEncode(cb) { onEncodeCb = cb; }
@@ -675,6 +778,6 @@ function escapeHtml(str) {
 
 module.exports = {
     init, show, toggle, setStatus, onEncode, showDecodeResult,
-    clearAction, showReloadButton,
+    clearAction, showReloadButton, showMissingColorsWarning,
     getSettings: () => state.settings
 };

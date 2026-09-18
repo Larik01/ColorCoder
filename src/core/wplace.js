@@ -4,6 +4,7 @@
 // no extension superpowers, no credentials sent), decodes them to raw RGBA
 // once, caches them, and reads pixels / horizontal sequences.
 // Automatically crosses tile boundaries (pixel 999 -> next tile pixel 0).
+// Also hosts the passive profile cache for the palette availability check.
 
 const { matchColor } = require('./palette.js');
 
@@ -101,11 +102,58 @@ async function readSequenceHorizontal(startTileX, startTileY, startPx, startPy, 
     return ids;
 }
 
+// ========== profile cache ==========
+// Fed passively by the fetch intercept in script.js; this module never
+// performs network IO. Unlock math proven against wplace client source:
+//   hasColor(e) = e < 32 || (extraColorsBitmap >> (e - 32)) & 1, bitmap ?? 0
+// Dormant (profile not seen yet) means: never block, never advise.
+
+let ccProfile = null;
+
+function noteProfile(json) {
+    if (json && typeof json === 'object' && typeof json.pixelsPainted === 'number') {
+        ccProfile = json;
+        return true;
+    }
+    return false;
+}
+
+function profileSeen() { return ccProfile !== null; }
+function getProfile() { return ccProfile; }
+
+// Dormant returns true: missing profile data must never block an injection.
+function hasColor(id) {
+    if (!ccProfile) return true;
+    if (id < 32) return true;
+    const raw = ccProfile.extraColorsBitmap;
+    const bitmap = (raw === undefined || raw === null) ? 0 : raw;
+    return !!((bitmap >> (id - 32)) & 1);
+}
+
+function extraUnlockedIds() {
+    if (!ccProfile) return null;
+    const ids = [];
+    for (let i = 32; i < 64; i++) if (hasColor(i)) ids.push(i);
+    return ids;
+}
+
+function missingExtraCount() {
+    if (!ccProfile) return null;
+    return 32 - extraUnlockedIds().length;
+}
+
+function hasAllColors() {
+    if (!ccProfile) return null;
+    return missingExtraCount() === 0;
+}
+
 module.exports = {
     TILE_SIZE,
     tileUrl,
     getTileImageData,
     readPixel,
     readSequenceHorizontal,
-    seedTileCache
+    seedTileCache,
+    noteProfile, profileSeen, getProfile,
+    hasColor, extraUnlockedIds, missingExtraCount, hasAllColors
 };
