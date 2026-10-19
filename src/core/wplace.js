@@ -1,8 +1,9 @@
 // src/core/wplace.js
-// Browser-side Wplace canvas reader. NO Node dependencies.
+// Browser-side Wplace canvas reader. NO Node dependencies at runtime;
+// module evaluation is Node-safe so tests can seed tiles and read regions.
 // Downloads tile PNGs via plain fetch (same CORS rights as the page itself —
 // no extension superpowers, no credentials sent), decodes them to raw RGBA
-// once, caches them, and reads pixels / horizontal sequences.
+// once, caches them, and reads pixels / horizontal sequences / rectangles.
 // Automatically crosses tile boundaries (pixel 999 -> next tile pixel 0).
 // Also hosts the passive profile cache for the palette availability check.
 
@@ -14,14 +15,15 @@ const TILE_BASE_URL = 'https://backend.wplace.live/files/s0/tiles';
 // Captured at module evaluation, which runs BEFORE script.js installs the
 // intercept fetch wrap. Every read-path fetch goes through RAW_FETCH, so
 // magic colors injected into served tiles can never leak into our own reads.
-const RAW_FETCH = window.fetch.bind(window);
+// Null under Node tests: reads there must come from seedTileCache, never network.
+const RAW_FETCH = (typeof window !== 'undefined') ? window.fetch.bind(window) : null;
 
 // In-memory cache: "tileX,tileY" -> ImageData (or null for unpainted/404 tiles)
 const tileCache = new Map();
 
 // One reusable scratch canvas for decoding tile PNGs
-const scratch = document.createElement('canvas');
-const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+const scratch = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+const scratchCtx = scratch ? scratch.getContext('2d', { willReadFrequently: true }) : null;
 
 function tileUrl(tileX, tileY) {
     return TILE_BASE_URL + '/' + tileX + '/' + tileY + '.png';
@@ -102,6 +104,39 @@ async function readSequenceHorizontal(startTileX, startTileY, startPx, startPy, 
     return ids;
 }
 
+// Read a rectangle of the live canvas in global coordinates, stitched across
+// tile boundaries on both axes. Returns { data, width, height } RGBA, alpha 0
+// where the canvas is unpainted, or null when any overlapping tile is itself
+// unpainted (404): a region crossing void cannot be histogrammed honestly.
+async function readRegionRGBA(gx, gy, w, h) {
+    const out = new Uint8ClampedArray(w * h * 4);
+    const tx0 = Math.floor(gx / TILE_SIZE), ty0 = Math.floor(gy / TILE_SIZE);
+    const tx1 = Math.floor((gx + w - 1) / TILE_SIZE), ty1 = Math.floor((gy + h - 1) / TILE_SIZE);
+    for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+            const imageData = await getTileImageData(tx, ty);
+            if (!imageData) return null;
+            const ox = tx * TILE_SIZE, oy = ty * TILE_SIZE;
+            const sx = Math.max(gx, ox), sy = Math.max(gy, oy);
+            const ex = Math.min(gx + w, ox + imageData.width);
+            const ey = Math.min(gy + h, oy + imageData.height);
+            for (let y = sy; y < ey; y++) {
+                const srcRow = (y - oy) * imageData.width;
+                const dstRow = (y - gy) * w;
+                for (let x = sx; x < ex; x++) {
+                    const si = (srcRow + (x - ox)) * 4;
+                    const di = (dstRow + (x - gx)) * 4;
+                    out[di] = imageData.data[si];
+                    out[di + 1] = imageData.data[si + 1];
+                    out[di + 2] = imageData.data[si + 2];
+                    out[di + 3] = imageData.data[si + 3];
+                }
+            }
+        }
+    }
+    return { data: out, width: w, height: h };
+}
+
 // ========== profile cache ==========
 // Fed passively by the fetch intercept in script.js; this module never
 // performs network IO. Unlock math proven against wplace client source:
@@ -153,6 +188,7 @@ module.exports = {
     getTileImageData,
     readPixel,
     readSequenceHorizontal,
+    readRegionRGBA,
     seedTileCache,
     noteProfile, profileSeen, getProfile,
     hasColor, extraUnlockedIds, missingExtraCount, hasAllColors

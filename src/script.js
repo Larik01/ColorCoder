@@ -9,13 +9,15 @@
 
 const { encodeV1, decodeV1, unpackHeader, VERSION, MAX_PAYLOAD_V2,
         encodeV2, decodeV2, unpackHeaderV2, findSyncOffset, PREFIX_LEN } = require('./core/protocol.js');
-const { readSequenceHorizontal, readPixel, noteProfile, profileSeen, hasColor } = require('./core/wplace.js');
-const { sequenceToPngBlob, injectTemplate } = require('./core/overlays.js');
+const { readSequenceHorizontal, readPixel, readRegionRGBA, noteProfile, profileSeen, hasColor } = require('./core/wplace.js');
+const { decodeQRRegion } = require('./core/qrdecode.js');
+const { sequenceToPngBlob, injectTemplate, matrixToPngBlob } = require('./core/overlays.js');
 const { COLOR_PALETTE } = require('./core/palette.js');
 const intercept = require('./core/intercept.js');
 const labels = require('./core/labels.js');
 const gui = require('./core/gui.js');
 const log = require('./core/log.js');
+const qrcodegen = require('qrcode-generator');
 
 // ==========================================================
 // 1. SINGLE FETCH WRAP: tile intercept + click spy + profile capture
@@ -155,15 +157,36 @@ async function attemptDecode(tileX, tileY, px, py) {
     log.info('[CC] Not a sync pixel (id ' + c.id + ' ' + c.name + '), nothing to decode here.');
     gui.setStatus('Not a message sync pixel (' + c.name + ').', 'info');
 }
-
+let qrScanArmed = false;
+let qrCorners = [];
+const QR_SCAN_MARGIN = 6;
 let lastClick = { alt: false, t: 0 };
 document.addEventListener('click', (e) => {
     lastClick = { alt: e.altKey, t: Date.now() };
 }, true);
 
 window.addEventListener('cc-click', (e) => {
-    if (!lastClick.alt || Date.now() - lastClick.t > 2000) return;
     const { tileX, tileY, px, py } = e.detail;
+
+    if (qrScanArmed) {
+        const gx = tileX * 1000 + px;
+        const gy = tileY * 1000 + py;
+        qrCorners.push({ gx, gy });
+        if (qrCorners.length === 1) {
+            return;
+        }
+        const corners = qrCorners;
+        qrCorners = [];
+        qrScanArmed = false;
+        gui.setQRArmed(false);
+        runQRScan(corners[0], corners[1]).catch(err => {
+            log.err('[CC] QR scan error: ' + err.message);
+            gui.setStatus('QR scan error: ' + err.message, 'error');
+        });
+        return;
+    }
+
+    if (!lastClick.alt || Date.now() - lastClick.t > 2000) return;
     attemptDecode(tileX, tileY, px, py)
         .catch(err => {
             log.err('[CC] Decode error: ' + err.message);
@@ -177,6 +200,32 @@ window.addEventListener('cc-label-click', (e) => {
     gui.showDecodeResult(entry.result, { gx: entry.gx, gy: entry.gy });
 });
 
+async function runQRScan(a, b) {
+    const x0 = Math.min(a.gx, b.gx), y0 = Math.min(a.gy, b.gy);
+    const x1 = Math.max(a.gx, b.gx), y1 = Math.max(a.gy, b.gy);
+    const gx = Math.max(0, x0 - QR_SCAN_MARGIN);
+    const gy = Math.max(0, y0 - QR_SCAN_MARGIN);
+    const w = (x1 + QR_SCAN_MARGIN + 1) - gx;
+    const h = (y1 + QR_SCAN_MARGIN + 1) - gy;
+    if (w < 12 || h < 12) {
+        gui.setStatus('Corners look adjacent or identical - click diagonal corners.', 'error');
+        return;
+    }
+    const region = await readRegionRGBA(gx, gy, w, h);
+    if (!region) {
+        gui.setStatus('Region crosses unpainted canvas - cannot scan.', 'error');
+        return;
+    }
+    const res = decodeQRRegion(region.data, region.width, region.height);
+    if (!res) {
+        gui.setStatus('No QR found in that region - click the outer diagonal corners of the symbol.', 'error');
+        return;
+    }
+    log.styled('[CC] Decoded QR v' + res.version + ', symbol ' + res.bounds.w + 'x' + res.bounds.h +
+        ' px' + (res.flipped ? ' (polarity retry)' : ''), 'color:#0c8;font-weight:bold');
+    gui.showQRResult(res, { gx: gx, gy: gy });
+}
+
 // window.addEventListener('cc-label-click', e => console.log('GOT LABEL CLICK', e.detail.ki));
 
 // ==========================================================
@@ -187,6 +236,11 @@ function isTyping(target) {
 }
 
 async function executeEncode(text, mode, free, protocol, force = false) {
+    if (!text || text.trim() === '') {
+        gui.setStatus('Empty message, nothing to encode.', 'error');
+        return;
+    }
+
     gui.clearAction();
     gui.setStatus('Encoding and generating PNG...', 'info');
 
@@ -236,6 +290,58 @@ async function executeEncode(text, mode, free, protocol, force = false) {
     }
 }
 
+async function executeQREncode(text, opts, force = false) {
+    gui.clearAction('qr');
+    if (!text || text.trim() === '') {
+        gui.setStatus('Empty message, nothing to encode.', 'error');
+        return;
+    }
+    gui.setStatus('Building QR...', 'info');
+
+    let size, bits;
+    try {
+        const qr = qrcodegen(0, opts.ec);
+        qr.addData(text);
+        qr.make();
+        size = qr.getModuleCount();
+        bits = new Uint8Array(size * size);
+        for (let y = 0; y < size; y++)
+            for (let x = 0; x < size; x++)
+                bits[y * size + x] = qr.isDark(y, x) ? 1 : 0;
+    } catch (err) {
+        gui.setStatus('QR encode failed: ' + err.message, 'error');
+        return;
+    }
+
+    if (!force && profileSeen()) {
+        const missing = [];
+        for (const id of [opts.dark, opts.light]) {
+            if (id !== 0 && !hasColor(id) && !missing.includes(id)) missing.push(id);
+        }
+        if (missing.length > 0) {
+            gui.showMissingColorsWarning(missing, () => executeQREncode(text, opts, true), 'qr');
+            return;
+        }
+    }
+
+    try {
+        const blob = await matrixToPngBlob(bits, size, opts.dark, opts.light, opts.scale);
+        const name = 'QR: ' + text.slice(0, 24);
+        await injectTemplate(blob, name);
+        log.styled('[CC] Injected "' + name + '" (' + size + ' modules, scale ' + opts.scale + ').', 'color:#0c8;font-weight:bold');
+        if (gui.getSettings().autoReload) {
+            gui.setStatus('Reloading page...', 'info', 0);
+            setTimeout(() => location.reload(), 500);
+        } else {
+            gui.setStatus('QR injected: ' + name, 'success');
+            gui.showReloadButton('qr');
+        }
+    } catch (err) {
+        log.err('[CC] QR inject failed: ' + err.message);
+        gui.setStatus('QR inject failed: ' + err.message, 'error');
+    }
+}
+
 async function legacyMakeMessage() {
     const modeRaw = (prompt('Mode: l = Lite (basic chars), f = Full (any UTF-8)', 'l') || '').trim().toLowerCase();
     if (!modeRaw) return;
@@ -268,13 +374,11 @@ document.addEventListener('keydown', (e) => {
         else labels.scanAndLabel();
         e.preventDefault();
     }
-    if (e.code === 'KeyS' && !e.shiftKey) {
-        log.info('[CC] SUMMARY ' + JSON.stringify(intercept.DBG) +
-            ' keyspace=' + intercept.KEY_COUNT + ' registry=' + intercept.registry.size());
-        for (const m of intercept.registry.values()) {
-            log.info('[CC]   key rgb(' + m.color.join(',') + ') -> @' +
-                m.gx + ',' + m.gy + ' "' + m.text + '"');
-        }
+    if (e.code === 'KeyQ') {
+        makeTestQR().catch(err => {
+            log.err('[CC] QR inject failed: ' + err.message);
+            gui.setStatus('QR inject failed: ' + err.message, 'error');
+        });
     }
 });
 
@@ -284,6 +388,14 @@ document.addEventListener('keydown', (e) => {
 function initApp() {
     gui.init();
     gui.onEncode(executeEncode);
+    gui.onQREncode(executeQREncode);
+    gui.onQRToggleArm(() => {
+        qrScanArmed = !qrScanArmed;
+        qrCorners = [];
+        gui.setQRArmed(qrScanArmed);
+        if (qrScanArmed) gui.setStatus('QR corner select: click two diagonal corners of the symbol.', 'info', 0);
+        else gui.setStatus('Corner select cancelled.', 'info');
+    });
 
     // auto-arm labels on first discovery when the GUI flag is set
     setInterval(() => {

@@ -1,20 +1,26 @@
 {
   "name": "color-coder",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "Color encoder/decoder for wplace.live",
   "scripts": {
-    "test": "node tests/test-colors.js && node tests/test-v1.js && node tests/test-v2.js && node tests/test-scan.js && node tests/test-keys.js",
+    "test": "node tests/test-colors.js && node tests/test-v1.js && node tests/test-v2.js && node tests/test-scan.js && node tests/test-keys.js && node tests/test-qrdecode.js",
     "test-colors": "node tests/test-colors.js",
     "test-v1": "node tests/test-v1.js",
     "test-v2": "node tests/test-v2.js",
     "test-scan": "node tests/test-scan.js",
     "build": "node scripts/build.js",
-    "dev": "node scripts/build.js --dev"
+    "dev": "node scripts/build.js --dev",
+    "test-qrdecode": "node tests/test-qrdecode.js",
+    "test-wplace-region": "node tests/test-wplace-region.js"
   },
   "devDependencies": {
     "esbuild": "^0.19.0",
     "pngjs": "^7.0.0"
   },
   "author": "Larik01",
-  "license": "GPL-3.0"
+  "license": "GPL-3.0",
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "qrcode-generator": "^2.0.4"
+  }
 }

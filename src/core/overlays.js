@@ -49,6 +49,29 @@ function sequenceToPngBlob(sequence) {
     });
 }
 
+// QR matrix -> NxN PNG blob. bits: Uint8Array of 0/1 row-major (1 = dark),
+// length size*size. Both colors painted opaque: on wplace there is no
+// paper behind us, transparent light modules would let stranger pixels
+// shine through the symbol.
+function matrixToPngBlob(bits, size, darkId, lightId, scale = 1) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size * scale;
+    canvas.height = size * scale;
+    const ctx = canvas.getContext('2d');
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const id = bits[y * size + x] ? darkId : lightId;
+            if (id === 0) continue; // Transparent module: paint nothing
+            const c = COLOR_PALETTE[id];
+            ctx.fillStyle = 'rgb(' + c.rgb[0] + ',' + c.rgb[1] + ',' + c.rgb[2] + ')';
+            ctx.fillRect(x * scale, y * scale, scale, scale);
+        }
+    }
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(b => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/png');
+    });
+}
+
 // ========== 2. native overlay injection ==========
 
 function listOverlays() {
@@ -278,5 +301,6 @@ module.exports = {
     injectTemplate, listOverlays,
     exportTemplates, importTemplates, removeTemplates,
     getOurTemplates, getAllTemplates, getManifest,
-    LS_KEY, MANIFEST_KEY, DB_NAME, STORE
+    LS_KEY, MANIFEST_KEY, DB_NAME, STORE,
+    matrixToPngBlob
 };

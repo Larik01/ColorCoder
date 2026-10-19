@@ -3,30 +3,85 @@
 Encode, hide, and read secret messages in the pixel canvas of [wplace.live](https://wplace.live).  
 Unofficial tool — not affiliated with wplace.
 
-## Userscript usage
+## Install on Chrome
 
-Click [link](https://github.com/Larik01/ColorCoder/raw/refs/heads/main/dist/script.user.js) to install with Tampermonkey (or build your own, see Build & test below).
+These instructions apply to Chrome and most Chromium-based desktop browsers, including Edge, Brave, and Opera.
 
-    Alt+C           toggle the ColorCoder GUI (encode, decode, overlays, settings)
-    Alt+Click       decode the message starting at the clicked pixel (V2 or V1 fallback;
-                    works even when the sync row is damaged or overpainted, via header fallback)
-    Alt+M           legacy: prompt for mode + text -> inject an *unplaced* V1 template -> reload;
-                    the only remaining V1 encode path, since the GUI encodes V2 only;
-                    then place it with the native overlay GUI
-    Alt+L           arm autoscan labels (scan framebuffer, track markers)
-    Alt+Shift+L     clear labels and disarm
-    Alt+S           dump autoscan counters and registry to console
+1. **Install Tampermonkey.**
 
-## What it does
+   Install [Tampermonkey from the Chrome Web Store](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo).
+
+2. **Enable browser support for userscripts.**
+
+   Open your browser's extensions settings and enable **Developer mode**. Then open
+   Tampermonkey's details page and enable **Allow User Scripts**. Tampermonkey also
+   maintains [browser-specific instructions](https://www.tampermonkey.net/faq.php?locale=en&q=Q209#Q209) for everything else.
+
+   <img src="docs/img/tm-allow-userscripts.png" width="520" alt="Allow User Scripts toggle in Tampermonkey details">
+3. **Click [link](https://github.com/Larik01/ColorCoder/raw/refs/heads/main/dist/script.user.js) to install ColorCoder with Tampermonkey (or build your own, see Build & test below).**
+
+Without this toggle the browser silently refuses every userscript, which is the single most common "the script does nothing" report for any project like this one.
+
+## Script usage
+
+- **QR encode**: the QR pane with EC dial (L/M/Q/H), integer scale (1x/2x/4x), custom color pair, live preview, luminance and locked-color warnings, and transparent background option for saving pixels.
+
+  <img src="docs/img/doc-qr-encode.png" width="500" alt="QR encoding example picture">
+
+- **QR decode**: corner-select — two diagonal clicks on the live canvas, result text in the decode pane.
+
+  <img src="docs/img/doc-qr-decode.png" width="500" alt="QR decoding example picture">
+
+- **Encode**: type your text, pick Lite or Full (Lite saves 25% pixels but has limited alphabet) and Free (32) or All (64) colors → overlay appears in wplace's native overlay list → place it with the native GUI, then paint.
+
+  <img src="docs/img/doc-encode.png" width="520" alt="Message encoding picture">
 
 - **Autoscan**: intercepts every tile PNG the map fetches, scans for V2 sync rows (including cross-tile seams), decodes messages, registers them under unique magic marker colors, and paints 2x2 markers above each sync. A servo tracks those markers across pan, drag, and zoom with windowed framebuffer reads and dead reckoning during coast.
-- **Manual decode**: Alt+Click any sync pixel to decode that message (V2 windowed first, V1 fallback). If the sync row is damaged or painted over, clicking the first header pixel still decodes: the header alone carries mode, length, and CRC.
-- **Encode + inject**: type text in the GUI, pick Lite or Full and Free (32) or All (64) colors with circle toggles → overlay appears in wplace's native template list → place it with the native GUI. The GUI encodes V2 only.
+
+  <img src="docs/img/doc-autoscan.png" width="500" alt="Autoscan label picture">
+
+- **Collapsible labels**: each autoscan label is a diamond pin plus a bubble with message text; clicking a label opens the full decode view in the GUI.
+
+- **Manual decode**: Alt+Click any sync pixel to decode that message (V2 windowed first, V1 fallback). If the sync row is damaged or painted over, clicking the first header pixel may still decode: the header alone carries mode, length, and CRC.
+
 - **Palette availability**: the fetch wrapper passively clones wplace's own `/me` response and reads `extraColorsBitmap`. Accounts missing premium colors see "N/32 premium colors are not unlocked, free mode recommended" under the palette toggle, and any encode whose pixel sequence uses colors the account lacks is stopped before injection with a named, color-swatched list and a "Create anyway" escape.
+
 - **Overlay manager** (Overlays tab): list every native overlay with size and timestamp, newest first; export selected ones to a single JSON file including base64 PNG blobs; import from such a file, skipping names that already exist; remove selected ones permanently. Master select-all checkbox with indeterminate state.
-- **Collapsible labels**: each autoscan label is a diamond pin plus an expandable bubble with honest `pre-wrap` text; clicking a bubble opens the full decode view in the GUI.
+
+  <img src="docs/img/doc-manager.png" width="500" alt="Overlay manager picture">
+
 - **Auto-arm option**: enable in Settings to arm labels automatically when the first message is discovered.
+
 - Supports 4 encoding modes in V2: Lite/Full text, using either All (64) or Free (32) colors. V1 remains fully decodable and encodable via Alt+M as a legacy path.
+## Script hotkeys
+
+    Alt+C           Toggle the ColorCoder GUI (encode, decode, overlays, settings)
+    Alt+Click       Decode the message starting at the clicked pixel (V2 or V1 fallback;
+                    works even when the sync row is damaged or overpainted, via header fallback)
+    Alt+L           Arm autoscan labels (scan framebuffer, track markers)
+    Alt+Shift+L     Clear labels and disarm
+    Alt+M           Legacy: prompt for mode + text -> inject an *unplaced* V1 template -> reload;
+                    the only remaining V1 encode path, since the GUI encodes V2 only;
+                    then place it with the native overlay GUI
+
+## QR encode & decode
+
+QR codes live alongside strip messages as a second, independent encoding family. The GUI uses warnings rather than blocks: custom color pairs are freely selectable, with luminance and locked-color caveats displayed inline, and the only hard gate is a create-time confirmation when using premium colors on a free account. Transparent (id 0) is allowed as a light background, halving paint cost exactly, though the GUI warns that it borrows its background from the canvas and may break on dark themes or busy art.
+
+Decode is tile-truth rather than framebuffer: the script reads CDN pixels stitched across tile boundaries, so it never depends on zoom level, mip filtering, or screen resolution. Click slop is forgiven by `snapToSymbol`, which finds the bounding box of the dark color in a margined rectangle, meaning the two corner clicks only need to be approximately diagonal. `jsQR` does the heavy lifting after the pipeline remaps the image to pristine black-on-white.
+
+The live preview in the QR pane renders a diagonal-split mock map when Transparent is selected, showing exactly what viewers on light vs dark theme will actually see through the unpainted modules.
+
+## The QR pipeline
+
+Every tile-truth rectangle passed to `qrdecode.js` goes through a pure, headless-tested pipeline:
+
+1. **Histogram**: `topTwoColors` builds an exact-RGB histogram, returning the two dominant colors (or void/transparent as a special entry).
+2. **Snap**: `snapToSymbol` scans a margined rectangle for pixels matching the darker of the two colors, returning its bounding box. This is the symbol's true footprint.
+3. **Crop**: `cropRGBA` trims the margin, isolating the snapped bounding box.
+4. **Upscale**: Nearest-neighbor integer upscale ensures the snapped box is at least 64 pixels per side, giving `jsQR`'s locator enough pixels per module even at scale 1.
+5. **Remap**: `remap` rebuilds the crop as pristine black-on-white RGBA, clamping any stray foreign pixels to the nearer of the two detected colors.
+6. **Decode**: The remapped image goes to `jsQR`. If it returns null, the pipeline swaps the detected pair (polarity flip) and the snap anchor, and tries once more.
 
 ## Autoscan pipeline
 
@@ -100,26 +155,40 @@ The shared alphabet grew over time by append-only edits, so every previously pai
         palette.js    64-color wplace palette + RGB matching (browser & Node safe)
         scan.js       sync row scanner, edge extraction, seam checks, marker painting helpers
         keys.js       13,056-key exact-match desert color space + FIFO registry
-        wplace.js     live-canvas reader (tile fetch, pixel reads, boundary walk) + passive profile cache
+        wplace.js     live-canvas reader (tile fetch, pixel reads, boundary walk, region stitch) + passive profile cache
+        qrdecode.js   QR decode core over raw RGBA (histogram, snap, remap, jsQR wrapper)
         intercept.js  autoscan pipeline (tile decode, scan, register, paint markers)
         labels.js     servo tracking (windowed reads, drag/scroll hierarchy, retirement)
         overlays.js   PNG blobs, native template injection, export/import/remove, inject manifest
-        gui.js        floating draggable UI panel (encode, decode, overlays manager, settings)
+        gui.js        floating draggable UI panel (encode, qr, decode, overlays manager, settings)
         log.js        centralized logger with mute toggle
     scripts/build.js  esbuild bundle + header glue -> dist/script.user.js
-    tests/            Node test suite (npm test) + framebuffer dumps + analyzers
+    tests/            Node test suite (npm test, 13 headless greens) + framebuffer dumps + analyzers
+    docs/img
+        doc-autoscan.png
+        doc-encode.png
+        doc-manager.png
+        doc-qr-decode.png
+        doc-qr-encode.png
+        tm-allow-userscripts.png
 
 ## Build & test
 
     npm install
-    npm test          # protocol + color + keys tests (Node)
+    npm test          # protocol + color + keys + qrdecode + wplace-region tests
     npm run dev       # readable bundle  -> dist/script.user.js
     npm run build     # minified bundle -> dist/script.user.js
 
-## Technical notes (hard-won)
+## Technical notes
 
+- V2 Message header is always composed of free colors
+- Lite mode alphabet - "abcdefghijklmnopqrstuvwxyz0123456789 .!?-_:;'\"()[]{}@#$%&/=+<>," - the alphabet is a fixed 63-char list of 6-bit indices; anything else requires Full mode 
 - Click coordinates come from intercepting the page's own `/pixel/{tileX}/{tileY}?x=..&y=..` fetch — no map projection math needed.
-- Canvas tiles live at `backend.wplace.live/files/s0/tiles/{x}/{y}.png`, 1000x1000; the reader walks horizontally across tile boundaries.
+- Canvas tiles live at `backend.wplace.live/files/s0/tiles/{x}/{y}.png`, 1000x1000; the reader walks horizontally across tile boundaries for strips, and stitches across both axes via `readRegionRGBA` for QR regions.
+- QR decode reads tile-truth pixels, not the framebuffer, so it never depends on zoom or mip filtering.
+- Snap to symbol: the dark-color bounding box of the margined rectangle is the symbol's true footprint, so corner clicks can be approximate and in any diagonal order.
+- Polarity retry: the second `jsQR` call swaps the detected pair and the snap anchor; `jsQR` sometimes accepts inverted input on the first attempt, so the `flipped` flag in the result is diagnostic, not a contract.
+- Transparent-background QR halves paint cost exactly (the preview line reports `darks * scale²` instead of `size² * scale²`), and the live preview renders both halves of a diagonal-split mock map to show what viewers on light vs dark theme will actually see.
 - The autoscan intercepts tile PNG fetches, decodes them to ImageData, scans for sync rows, and returns a modified PNG with magic markers painted. The clean ImageData is seeded into a cache so our own sequence reads bypass the modified PNG.
 - Magic markers live in a color desert (b=255, g≤50) that no palette color or blend can enter, enabling exact-match with zero tolerance and 13,056 unique keys.
 - The servo tracks markers via windowed `readPixels` around last-known positions, with dead reckoning during all-miss ticks, blind follow during drag, and hide-and-rescan on wheel/pinch/dblclick.

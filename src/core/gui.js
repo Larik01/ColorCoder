@@ -1,18 +1,76 @@
 // src/core/gui.js
-// Pure DOM/CSS floating panel: encode, decode, overlays manager, settings.
-// Fetches user profile on init to determine palette availability.
+// Pure DOM/CSS floating panel: encode, qr, decode, overlays manager, settings.
+// Reads palette availability from wplace.js profile cache (no network here).
+// Loads collapsed (header only) on every page load; results auto-expand it.
 
 const { ALPHABET, encodeV1, encodeV2 } = require('./protocol.js');
+const { COLOR_PALETTE } = require('./palette.js');
 const labels = require('./labels.js');
 const overlays = require('./overlays.js');
 const wplace = require('./wplace.js');
 const log = require('./log.js');
+const qrcodegen = require('qrcode-generator');
 
 const LS_KEY = 'colorcoder-gui-state';
+
+const DEF_DARK = (COLOR_PALETTE.find(c => c.name === 'Black') || COLOR_PALETTE[1]).id;
+const DEF_LIGHT = (COLOR_PALETTE.find(c => c.name === 'White') || COLOR_PALETTE[31]).id;
+
+// Mock blank-map backgrounds for the transparent-light QR preview.
+// Angular low-poly landmasses in unit coordinates, drawn as vector paths at
+// preview size (crisp at any scale). One vertex list, two palettes: the two
+// diagonal halves are the same place in light and dark theme.
+// Retune palettes and region placement by eye against wplace's real blank map.
+const MAP_LIGHT = [[154, 181, 244], [223, 252, 212], [238, 236, 230]];
+const MAP_DARK = [[44, 51, 69], [61, 70, 92], [51, 58, 77]];
+const MAP_REGIONS = [
+    { x: 0.30, y: 0.30, c: 1, r: 0.34, seed: 11 },
+    { x: 0.78, y: 0.24, c: 2, r: 0.26, seed: 22 },
+    { x: 0.55, y: 0.72, c: 1, r: 0.30, seed: 33 },
+    { x: 0.12, y: 0.78, c: 2, r: 0.22, seed: 44 },
+    { x: 0.90, y: 0.66, c: 1, r: 0.20, seed: 55 }
+];
+let mapPolys = null;
+
+function polyHash(a, b) {
+    let n = (a * 374761393 + b * 668265263) | 0;
+    n = (n ^ (n >> 13)) * 1274126177;
+    return ((n ^ (n >> 16)) >>> 0) / 4294967295;
+}
+
+function buildMapPolys() {
+    mapPolys = MAP_REGIONS.map((reg, ri) => {
+        const K = 9 + Math.floor(polyHash(ri, 7) * 4); // 9..12 straight edges
+        const pts = [];
+        for (let k = 0; k < K; k++) {
+            const ang = (k / K) * Math.PI * 2;
+            const rad = reg.r * (0.55 + 0.5 * polyHash(ri * 31 + k, ri + 3));
+            pts.push([reg.x + Math.cos(ang) * rad, reg.y + Math.sin(ang) * rad * 0.9]);
+        }
+        return { c: reg.c, pts };
+    });
+}
+
+function drawMap(ctx, sym, palette) {
+    if (!mapPolys) buildMapPolys();
+    ctx.fillStyle = 'rgb(' + palette[0].join(',') + ')';
+    ctx.fillRect(0, 0, sym, sym);
+    for (const poly of mapPolys) {
+        ctx.fillStyle = 'rgb(' + palette[poly.c].join(',') + ')';
+        ctx.beginPath();
+        poly.pts.forEach((p, i) => {
+            const x = p[0] * sym, y = p[1] * sym;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+        ctx.fill();
+    }
+}
 
 const defaultState = {
     x: 20, y: 20, collapsed: false, tab: 'encode',
     enc: { proto: 2, mode: 0, free: 1 },
+    qr: { ec: 'H', scale: 1, dark: DEF_DARK, light: DEF_LIGHT, text: '' },
     settings: { autoReload: false, consoleLogs: true, autoArm: false }
 };
 
@@ -20,11 +78,17 @@ function loadState() {
     try {
         const s = Object.assign({}, defaultState, JSON.parse(localStorage.getItem(LS_KEY) || '{}'));
         s.enc = Object.assign({}, defaultState.enc, s.enc);
+        s.qr = Object.assign({}, defaultState.qr, s.qr);
         s.settings = Object.assign({}, defaultState.settings, s.settings);
+        if (typeof s.qr.dark !== 'number' || s.qr.dark < 0 || s.qr.dark > 63) s.qr.dark = defaultState.qr.dark;
+        if (typeof s.qr.light !== 'number' || s.qr.light < 0 || s.qr.light > 63) s.qr.light = defaultState.qr.light;
+        if (typeof s.qr.scale !== 'number') s.qr.scale = defaultState.qr.scale;
+        if (['L', 'M', 'Q', 'H'].indexOf(s.qr.ec) === -1) s.qr.ec = defaultState.qr.ec;
         return s;
     } catch (e) {
         const s = Object.assign({}, defaultState);
         s.enc = Object.assign({}, defaultState.enc);
+        s.qr = Object.assign({}, defaultState.qr);
         s.settings = Object.assign({}, defaultState.settings);
         return s;
     }
@@ -35,9 +99,13 @@ function saveState(state) {
 
 let state = loadState();
 let panel, header, body, statusEl, statusTimer = null;
-let encodePane, decodePane, settingsPane, managerPane;
+let encodePane, decodePane, settingsPane, managerPane, qrPane;
 let encodeBtn, textArea, liteWarn, previewEl, hintEl;
 let onEncodeCb = null;
+let onQREncodeCb = null;
+let onQRToggleArmCb = null;
+let qrArmBtn = null;
+let qrArmVisual = false;
 
 function css() {
     return `
@@ -65,7 +133,7 @@ function css() {
         #cc-body { padding: 10px; display: ${state.collapsed ? 'none' : 'block'}; overflow-y: auto; }
         .cc-tabs { display: flex; margin-bottom: 10px; border-bottom: 1px solid #444; }
         .cc-tabs button {
-            background: transparent; border: none; color: #888; padding: 4px 8px;
+            background: transparent; border: none; color: #888; padding: 4px 6px;
             cursor: pointer; font-family: inherit; font-size: 12px; flex: 1;
         }
         .cc-tabs button.active { color: #7fffd4; border-bottom: 2px solid #7fffd4; }
@@ -107,8 +175,6 @@ function css() {
         .cc-template-row label { flex: 1; cursor: pointer; margin: 0; }
         .cc-template-name { color: #e0e0e0; font-size: 11px; }
         .cc-autoscan-section { border-top: 1px solid #333; padding-top: 8px; margin-top: 4px; }
-        
-        /* Circle toggle groups */
         .cc-toggle-group {
             display: flex;
             border: 1px solid #444;
@@ -142,6 +208,8 @@ function css() {
 }
 
 function createPanel() {
+    state.collapsed = true; // every page load starts header-only
+
     const style = document.createElement('style');
     style.textContent = css();
     document.head.appendChild(style);
@@ -156,7 +224,7 @@ function createPanel() {
     header.innerHTML = `
         <span class="title">COLORCODER</span>
         <span class="btns">
-            <button id="cc-collapse" title="Collapse">_</button>
+            <button id="cc-collapse" title="Collapse">${state.collapsed ? '+' : '_'}</button>
             <button id="cc-close" title="Hide (Alt+C)">x</button>
         </span>
     `;
@@ -169,6 +237,7 @@ function createPanel() {
     tabs.className = 'cc-tabs';
     tabs.innerHTML = `
         <button data-tab="encode" class="${state.tab === 'encode' ? 'active' : ''}">Encode</button>
+        <button data-tab="qr" class="${state.tab === 'qr' ? 'active' : ''}">QR</button>
         <button data-tab="decode" class="${state.tab === 'decode' ? 'active' : ''}">Decode</button>
         <button data-tab="manager" class="${state.tab === 'manager' ? 'active' : ''}">Overlays</button>
         <button data-tab="settings" class="${state.tab === 'settings' ? 'active' : ''}">Settings</button>
@@ -212,12 +281,70 @@ function createPanel() {
     `;
     body.appendChild(encodePane);
 
+    qrPane = document.createElement('div');
+    qrPane.className = `cc-pane ${state.tab === 'qr' ? 'active' : ''}`;
+    qrPane.dataset.tab = 'qr';
+    qrPane.innerHTML = `
+        <div class="cc-row">
+            <label>Message Text</label>
+            <textarea id="cc-qrtext" placeholder="Type message..."></textarea>
+            <div id="cc-qr-preview" class="cc-meta" style="margin-top:4px;"></div>
+            <canvas id="cc-qr-canvas" style="display:none; margin-top:6px; image-rendering: pixelated; border:1px solid #333; border-radius:3px;"></canvas>
+        </div>
+        <div class="cc-row">
+            <label>Error correction</label>
+            <div class="cc-toggle-group">
+                <input type="radio" name="cc-qrec" id="cc-qrec-l" value="L">
+                <label for="cc-qrec-l">L</label>
+                <input type="radio" name="cc-qrec" id="cc-qrec-m" value="M">
+                <label for="cc-qrec-m">M</label>
+                <input type="radio" name="cc-qrec" id="cc-qrec-q" value="Q">
+                <label for="cc-qrec-q">Q</label>
+                <input type="radio" name="cc-qrec" id="cc-qrec-h" value="H">
+                <label for="cc-qrec-h">H</label>
+            </div>
+        </div>
+        <div class="cc-row">
+            <label>Module scale</label>
+            <div class="cc-toggle-group">
+                <input type="radio" name="cc-qrscale" id="cc-qrscale-1" value="1">
+                <label for="cc-qrscale-1">1x</label>
+                <input type="radio" name="cc-qrscale" id="cc-qrscale-2" value="2">
+                <label for="cc-qrscale-2">2x</label>
+                <input type="radio" name="cc-qrscale" id="cc-qrscale-4" value="4">
+                <label for="cc-qrscale-4">4x</label>
+            </div>
+        </div>
+        <div class="cc-row">
+            <label>Dark color</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <div id="cc-qr-swatchdark" style="width:18px;height:18px;border:1px solid #444;border-radius:3px;flex-shrink:0;"></div>
+                <select id="cc-qr-dark"></select>
+            </div>
+        </div>
+        <div class="cc-row">
+            <label>Light color</label>
+            <div style="display:flex;gap:6px;align-items:center;">
+                <div id="cc-qr-swatchlight" style="width:18px;height:18px;border:1px solid #444;border-radius:3px;flex-shrink:0;"></div>
+                <select id="cc-qr-light"></select>
+            </div>
+        </div>
+        <div id="cc-qr-lumwarn" class="cc-warn" style="display:none;"></div>
+        <div id="cc-qr-lockwarn" class="cc-warn" style="display:none;"></div>
+        <button id="cc-qrencode" class="cc-btn">Create QR Overlay</button>
+        <div id="cc-qr-action" style="margin-top:6px;"></div>
+    `;
+    body.appendChild(qrPane);
+
     decodePane = document.createElement('div');
     decodePane.className = `cc-pane ${state.tab === 'decode' ? 'active' : ''}`;
     decodePane.dataset.tab = 'decode';
     decodePane.innerHTML = `
         <div class="cc-row" style="color:#888; font-size:11px; margin-bottom:10px;">
             Alt+Click any sync pixel: V2 purple row or V1 black marker.
+        </div>
+        <div class="cc-row">
+            <button id="cc-qrarm" class="cc-btn" style="background:#555; color:#fff;">QR corner select</button>
         </div>
         <div id="cc-decode-empty" style="color:#555; text-align:center; padding:20px;">
             No messages decoded yet.
@@ -304,6 +431,7 @@ function bindEvents() {
             body.querySelector(`.cc-pane[data-tab="${state.tab}"]`).classList.add('active');
             saveState(state);
             if (state.tab === 'manager') refreshTemplateList();
+            if (state.tab === 'qr') refreshQRPane();
         });
     });
 
@@ -379,6 +507,12 @@ function bindEvents() {
         }
 
         const text = textArea.value;
+        if (text.trim() === '') {
+            liteWarn.style.display = 'none';
+            previewEl.textContent = 'Type a message first.';
+            encodeBtn.disabled = true;
+            return;
+        }
         const bad = [];
         if (mode === 0) {
             for (const ch of text) {
@@ -414,11 +548,205 @@ function bindEvents() {
     refreshEncodePane();
 
     encodeBtn.addEventListener('click', () => {
-        clearAction();
+        clearAction('encode');
         if (onEncodeCb) {
             onEncodeCb(textArea.value, state.enc.mode, state.enc.free, state.enc.proto);
         }
     });
+
+    // --- QR pane ---
+    const qrText = qrPane.querySelector('#cc-qrtext');
+    const qrPreview = qrPane.querySelector('#cc-qr-preview');
+    const qrCanvas = qrPane.querySelector('#cc-qr-canvas');
+    const qrBtn = qrPane.querySelector('#cc-qrencode');
+    const qrDarkSel = qrPane.querySelector('#cc-qr-dark');
+    const qrLightSel = qrPane.querySelector('#cc-qr-light');
+    const qrSwatchDark = qrPane.querySelector('#cc-qr-swatchdark');
+    const qrSwatchLight = qrPane.querySelector('#cc-qr-swatchlight');
+    const qrLumWarn = qrPane.querySelector('#cc-qr-lumwarn');
+    const qrLockWarn = qrPane.querySelector('#cc-qr-lockwarn');
+
+    qrText.value = state.qr.text || '';
+
+    function lum(rgb) {
+        return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+    }
+
+    function fillPairSelect(sel, selectedId, forbidZero) {
+        sel.innerHTML = '';
+        for (let id = 0; id < 64; id++) {
+            const c = COLOR_PALETTE[id];
+            if (!c) continue;
+            const opt = document.createElement('option');
+            const locked = wplace.profileSeen() && !wplace.hasColor(id);
+            const forbidden = forbidZero && id === 0;
+            opt.value = String(id);
+            opt.textContent = c.name + (forbidden ? ' (background only)' : locked ? ' (locked)' : '');
+            if (forbidden) opt.disabled = true;
+            if (id === selectedId) opt.selected = true;
+            sel.appendChild(opt);
+        }
+    }
+
+        function drawQRPreview(qrLive, size, fit, darkId, lightId) {
+        const ctx = qrCanvas.getContext('2d');
+        const dc = COLOR_PALETTE[darkId];
+        const darkCss = 'rgb(' + dc.rgb.join(',') + ')';
+        const sym = size * fit;
+        qrCanvas.width = sym;
+        qrCanvas.height = sym;
+        qrCanvas.style.display = 'block';
+        ctx.imageSmoothingEnabled = false;
+
+        if (lightId === 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(0, 0); ctx.lineTo(sym, 0); ctx.lineTo(sym, sym);
+            ctx.closePath();
+            ctx.clip();
+            drawMap(ctx, sym, MAP_LIGHT);
+            ctx.restore();
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(0, 0); ctx.lineTo(0, sym); ctx.lineTo(sym, sym);
+            ctx.closePath();
+            ctx.clip();
+            drawMap(ctx, sym, MAP_DARK);
+            ctx.restore();
+        } else {
+            const lc = COLOR_PALETTE[lightId];
+            ctx.fillStyle = 'rgb(' + lc.rgb.join(',') + ')';
+            ctx.fillRect(0, 0, sym, sym);
+        }
+
+        ctx.fillStyle = darkCss;
+        for (let y = 0; y < size; y++)
+            for (let x = 0; x < size; x++)
+                if (qrLive.isDark(y, x)) ctx.fillRect(x * fit, y * fit, fit, fit);
+    }
+
+    function refreshQRPane() {
+        let dark = parseInt(qrDarkSel.value, 10);
+        let light = parseInt(qrLightSel.value, 10);
+        if (isNaN(dark)) dark = state.qr.dark;
+        if (isNaN(light)) light = state.qr.light;
+        const ec = qrPane.querySelector('input[name="cc-qrec"]:checked').value;
+        const scale = parseInt(qrPane.querySelector('input[name="cc-qrscale"]:checked').value, 10);
+        state.qr = { ec, scale, dark, light, text: qrText.value };
+        saveState(state);
+
+        fillPairSelect(qrDarkSel, dark, true);
+        fillPairSelect(qrLightSel, light, false);
+
+        const dc = COLOR_PALETTE[dark] || COLOR_PALETTE[DEF_DARK];
+        const lc = COLOR_PALETTE[light] || COLOR_PALETTE[DEF_LIGHT];
+        qrSwatchDark.style.background = 'rgb(' + dc.rgb.join(',') + ')';
+        qrSwatchLight.style.background = 'rgb(' + lc.rgb.join(',') + ')';
+
+        if (light === 0) {
+            qrLumWarn.style.display = 'block';
+            qrLumWarn.style.color = '#e67e22';
+            qrLumWarn.textContent = 'Transparent background: only dark modules paint. Reads on light canvas or theme; busy or dark backgrounds may break decode.';
+        } else {
+            const dl = lum(dc.rgb), ll = lum(lc.rgb);
+            if (dl >= ll) {
+                qrLumWarn.style.display = 'block';
+                qrLumWarn.style.color = '#e74c3c';
+                qrLumWarn.textContent = 'Inverted pair: the dark color is brighter than the light one, decoders will fail.';
+            } else if (ll - dl < 0.2) {
+                qrLumWarn.style.display = 'block';
+                qrLumWarn.style.color = '#e67e22';
+                qrLumWarn.textContent = 'Low contrast pair, decoders may struggle.';
+            } else {
+                qrLumWarn.style.display = 'none';
+            }
+        }
+
+        const lockedChosen = [];
+        for (const id of [dark, light]) {
+            if (id !== 0 && wplace.profileSeen() && !wplace.hasColor(id) && lockedChosen.indexOf(id) === -1) {
+                lockedChosen.push(id);
+            }
+        }
+        if (lockedChosen.length > 0) {
+            qrLockWarn.style.display = 'block';
+            qrLockWarn.style.color = '#e67e22';
+            qrLockWarn.textContent = lockedChosen.map(id => COLOR_PALETTE[id].name).join(', ') +
+                (lockedChosen.length > 1 ? ' are' : ' is') +
+                ' not unlocked on this account; creating will ask for confirmation.';
+        } else {
+            qrLockWarn.style.display = 'none';
+        }
+
+        const text = qrText.value;
+        if (text.trim() === '') {
+            qrPreview.textContent = 'Type a message first.';
+            qrCanvas.style.display = 'none';
+            qrBtn.disabled = true;
+            return;
+        }
+        let info = null, tooLong = false, qrLive = null;
+        try {
+            const qr = qrcodegen(0, ec);
+            qr.addData(text);
+            qr.make();
+            const size = qr.getModuleCount();
+            let darks = 0;
+            for (let y = 0; y < size; y++)
+                for (let x = 0; x < size; x++)
+                    if (qr.isDark(y, x)) darks++;
+            info = { version: (size - 17) / 4, size: size, darks: darks };
+            qrLive = qr;
+        } catch (e) {
+            tooLong = true;
+        }
+        if (tooLong) {
+            qrPreview.textContent = 'Message too long for QR at EC ' + ec + '.';
+            qrCanvas.style.display = 'none';
+            qrBtn.disabled = true;
+            return;
+        }
+        const paintPx = (light === 0 ? info.darks : info.size * info.size) * scale * scale;
+        qrPreview.textContent = 'v' + info.version + ', ' + info.size + ' modules, ' +
+            (info.size * scale) + ' px canvas, ' + dc.name + ' on ' + lc.name +
+            ' (' + paintPx + ' px to paint)';
+        const fit = Math.max(1, Math.min(4, Math.floor(300 / info.size)));
+        drawQRPreview(qrLive, info.size, fit, dark, light);
+        qrBtn.disabled = false;
+    }
+    window.refreshQRPane = refreshQRPane;
+
+    qrPane.querySelectorAll('input[name="cc-qrec"]').forEach(r => r.addEventListener('change', refreshQRPane));
+    qrPane.querySelectorAll('input[name="cc-qrscale"]').forEach(r => r.addEventListener('change', refreshQRPane));
+    qrDarkSel.addEventListener('change', refreshQRPane);
+    qrLightSel.addEventListener('change', refreshQRPane);
+    qrText.addEventListener('input', refreshQRPane);
+
+    // restore saved radio state
+    const ecRadio = qrPane.querySelector('input[name="cc-qrec"][value="' + state.qr.ec + '"]');
+    if (ecRadio) ecRadio.checked = true;
+    const scaleRadio = qrPane.querySelector('input[name="cc-qrscale"][value="' + state.qr.scale + '"]');
+    if (scaleRadio) scaleRadio.checked = true;
+    refreshQRPane();
+
+    qrBtn.addEventListener('click', () => {
+        clearAction('qr');
+        if (!onQREncodeCb) {
+            setStatus('QR encode wires in the next step.', 'info');
+            return;
+        }
+        onQREncodeCb(qrText.value, {
+            ec: state.qr.ec, scale: state.qr.scale,
+            dark: state.qr.dark, light: state.qr.light
+        });
+    });
+
+    // --- QR corner select arm ---
+    qrArmBtn = decodePane.querySelector('#cc-qrarm');
+    qrArmBtn.addEventListener('click', () => {
+        if (onQRToggleArmCb) onQRToggleArmCb();
+    });
+    updateQRArmButton();
 
     // --- Overlays manager ---
     const templateList = managerPane.querySelector('#cc-template-list');
@@ -621,9 +949,21 @@ function bindEvents() {
     updateArmButton();
 
     if (state.tab === 'manager') refreshTemplateList();
+    if (state.tab === 'qr') refreshQRPane();
 }
 
-// --- Status line and action slot ---
+// --- Status line, action slots, arm visual ---
+
+function expandBody() {
+    if (!state.collapsed) return;
+    state.collapsed = false;
+    if (body) body.style.display = 'block';
+    if (header) {
+        const btn = header.querySelector('#cc-collapse');
+        if (btn) btn.textContent = '_';
+    }
+    saveState(state);
+}
 
 function setStatus(msg, type = 'info', timeout = 5000) {
     if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
@@ -638,17 +978,19 @@ function setStatus(msg, type = 'info', timeout = 5000) {
     }
 }
 
-function actionSlot() {
-    return encodePane ? encodePane.querySelector('#cc-action') : null;
+function slotFor(pane) {
+    const root = (pane === 'qr') ? qrPane : encodePane;
+    if (!root) return null;
+    return root.querySelector(pane === 'qr' ? '#cc-qr-action' : '#cc-action');
 }
 
-function clearAction() {
-    const slot = actionSlot();
+function clearAction(pane = 'encode') {
+    const slot = slotFor(pane);
     if (slot) slot.innerHTML = '';
 }
 
-function showReloadButton() {
-    const slot = actionSlot();
+function showReloadButton(pane = 'encode') {
+    const slot = slotFor(pane);
     if (!slot) return;
     slot.innerHTML = '';
     const btn = document.createElement('button');
@@ -660,20 +1002,18 @@ function showReloadButton() {
     slot.appendChild(btn);
 }
 
-function showMissingColorsWarning(missingIds, onForce) {
-    const slot = actionSlot();
+function showMissingColorsWarning(missingIds, onForce, pane = 'encode') {
+    const slot = slotFor(pane);
     if (!slot) return;
     slot.innerHTML = '';
-
-    const { COLOR_PALETTE } = require('./palette.js');
 
     const list = document.createElement('div');
     list.style.cssText = 'background:#0f0f11; padding:6px; border:1px solid #e67e22; border-radius:3px; margin-bottom:6px;';
 
-    const header = document.createElement('div');
-    header.style.cssText = 'color:#e67e22; font-size:11px; margin-bottom:4px;';
-    header.textContent = 'Uses colors you have not unlocked:';
-    list.appendChild(header);
+    const header2 = document.createElement('div');
+    header2.style.cssText = 'color:#e67e22; font-size:11px; margin-bottom:4px;';
+    header2.textContent = 'Uses colors you have not unlocked:';
+    list.appendChild(header2);
 
     for (const id of missingIds) {
         const c = COLOR_PALETTE[id];
@@ -682,7 +1022,7 @@ function showMissingColorsWarning(missingIds, onForce) {
         row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px; color:#e0e0e0;';
 
         const swatch = document.createElement('div');
-        swatch.style.cssText = `width:12px; height:12px; border-radius:2px; border:1px solid #444; background:rgb(${c.rgb.join(',')}); flex-shrink:0;`;
+        swatch.style.cssText = 'width:12px; height:12px; border-radius:2px; border:1px solid #444; background:rgb(' + c.rgb.join(',') + '); flex-shrink:0;';
 
         const name = document.createElement('span');
         name.textContent = c.name;
@@ -702,6 +1042,50 @@ function showMissingColorsWarning(missingIds, onForce) {
     slot.appendChild(btn);
 }
 
+function updateQRArmButton() {
+    if (!qrArmBtn) return;
+    qrArmBtn.textContent = qrArmVisual ? 'Cancel corner select' : 'QR corner select';
+    qrArmBtn.style.background = qrArmVisual ? '#c0392b' : '#555';
+}
+
+function setQRArmed(armed) {
+    qrArmVisual = !!armed;
+    updateQRArmButton();
+}
+
+function showQRResult(result, pos) {
+    show();
+
+    const empty = decodePane.querySelector('#cc-decode-empty');
+    const content = decodePane.querySelector('#cc-decode-content');
+    empty.style.display = 'none';
+    content.style.display = 'block';
+
+    const darkStr = result.dark ? 'rgb(' + result.dark.join(',') + ')' : 'transparent';
+    const lightStr = result.light ? 'rgb(' + result.light.join(',') + ')' : 'transparent';
+    const posStr = pos ? 'Region origin: ' + pos.gx + ',' + pos.gy : '';
+
+    content.innerHTML = `
+        <div class="cc-meta">QR v${result.version} | symbol ${result.bounds.w}x${result.bounds.h} px | ${darkStr} on ${lightStr}${result.flipped ? ' | polarity retry' : ''}</div>
+        <div class="cc-meta">${posStr}</div>
+        <div class="cc-decode-result">${escapeHtml(result.text || '')}</div>
+        <button id="cc-copy" class="cc-btn" style="background:#555; color:#fff; margin-top:4px;">Copy Text</button>
+    `;
+
+    content.querySelector('#cc-copy').addEventListener('click', () => {
+        navigator.clipboard.writeText(result.text || '').then(() => {
+            setStatus('Copied to clipboard', 'success');
+        });
+    });
+
+    state.tab = 'decode';
+    body.querySelectorAll('.cc-tabs button').forEach(b => b.classList.remove('active'));
+    body.querySelector('.cc-tabs button[data-tab="decode"]').classList.add('active');
+    body.querySelectorAll('.cc-pane').forEach(p => p.classList.remove('active'));
+    decodePane.classList.add('active');
+    saveState(state);
+}
+
 // --- Public API ---
 
 function init() {
@@ -712,18 +1096,23 @@ function init() {
 
 function show() {
     if (panel) panel.style.display = 'flex';
+    expandBody();
     if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
+    if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
 }
 
 function toggle() {
     if (!panel) init();
     else panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
-    if (panel.style.display === 'flex' && state.tab === 'manager' && window.refreshTemplateList) {
-        window.refreshTemplateList();
+    if (panel.style.display === 'flex') {
+        if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
+        if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
     }
 }
 
 function onEncode(cb) { onEncodeCb = cb; }
+function onQREncode(cb) { onQREncodeCb = cb; }
+function onQRToggleArm(cb) { onQRToggleArmCb = cb; }
 
 function showDecodeResult(result, tileInfo) {
     show();
@@ -777,7 +1166,8 @@ function escapeHtml(str) {
 }
 
 module.exports = {
-    init, show, toggle, setStatus, onEncode, showDecodeResult,
+    init, show, toggle, setStatus, onEncode, onQREncode, onQRToggleArm, setQRArmed,
+    showDecodeResult, showQRResult,
     clearAction, showReloadButton, showMissingColorsWarning,
     getSettings: () => state.settings
 };
