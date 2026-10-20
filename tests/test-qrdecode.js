@@ -171,4 +171,16 @@ test('snapToSymbol bbox exact', () => {
     assert.deepStrictEqual([box.x, box.y, box.w, box.h], [3, 2, 5, 4]);
 });
 
+test('black-on-white symbol on unpainted void background decodes', () => {
+    const text = 'fresh on blank';
+    const m = makeMatrix(text);
+    const scale = 2, sym = m.length * scale, pad = 10;
+    const W = sym + pad * 2, H = W;
+    const rgba = blankRGBA(W, H, null);
+    paint(m, scale, rgba, W, H, pad, pad, [10, 10, 10], [245, 245, 245]);
+    const res = decodeQRRegion(rgba, W, H);
+    assert.ok(res);
+    assert.strictEqual(res.text, text);
+});
+
 console.log('test-qrdecode: ' + passed + ' tests passed');

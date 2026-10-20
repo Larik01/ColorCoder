@@ -40,8 +40,11 @@ function colorHistogram(rgba, w, h) {
 
 function topTwoColors(rgba, w, h) {
     const hist = colorHistogram(rgba, w, h);
-    if (hist.length < 2) return null;
-    return [hist[0], hist[1]];
+    const opaque = hist.filter(e => e.rgb !== null);
+    const voidEntry = hist.find(e => e.rgb === null) || null;
+    if (opaque.length >= 2) return [opaque[0], opaque[1]];
+    if (opaque.length === 1 && voidEntry) return [opaque[0], voidEntry];
+    return null;
 }
 
 // Bounding box of pixels matching entry (exact rgb, or void by alpha).
