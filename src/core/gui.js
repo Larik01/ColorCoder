@@ -32,6 +32,19 @@ const MAP_REGIONS = [
 ];
 let mapPolys = null;
 
+function dedupeHistory() {
+    const seen = new Set();
+    state.history = state.history.filter(e => {
+        const k = e.kind + '|' + e.text;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+    });
+}
+
+let pinFactory = null;
+function setPinFactory(factory) { pinFactory = factory; }
+
 function polyHash(a, b) {
     let n = (a * 374761393 + b * 668265263) | 0;
     n = (n ^ (n >> 13)) * 1274126177;
@@ -71,7 +84,8 @@ const defaultState = {
     x: 20, y: 20, collapsed: false, tab: 'encode',
     enc: { proto: 2, mode: 0, free: 1 },
     qr: { ec: 'H', scale: 1, dark: DEF_DARK, light: DEF_LIGHT, text: '' },
-    settings: { autoReload: false, consoleLogs: true, autoArm: false }
+    settings: { autoReload: false, consoleLogs: true, autoArm: false },
+    history: []
 };
 
 function loadState() {
@@ -96,6 +110,9 @@ function loadState() {
 function saveState(state) {
     localStorage.setItem(LS_KEY, JSON.stringify(state));
 }
+function requestExpandedOnNextLoad() {
+    localStorage.setItem('cc-start-expanded', '1');
+}
 
 let state = loadState();
 let panel, header, body, statusEl, statusTimer = null;
@@ -106,6 +123,7 @@ let onQREncodeCb = null;
 let onQRToggleArmCb = null;
 let qrArmBtn = null;
 let qrArmVisual = false;
+dedupeHistory();
 
 function css() {
     return `
@@ -208,7 +226,11 @@ function css() {
 }
 
 function createPanel() {
-    state.collapsed = true; // every page load starts header-only
+    // Every page load starts header-only, unless a pin navigation asked us
+    // to come back expanded. The flag is one-shot.
+    const startExpanded = localStorage.getItem('cc-start-expanded') === '1';
+    if (startExpanded) localStorage.removeItem('cc-start-expanded');
+    state.collapsed = !startExpanded;
 
     const style = document.createElement('style');
     style.textContent = css();
@@ -396,6 +418,23 @@ function createPanel() {
         <div class="cc-row">
             <label><input type="checkbox" id="cc-logs" ${state.settings.consoleLogs ? 'checked' : ''}> Show console logs</label>
         </div>
+        <div class="cc-row">
+            <label>Scan history cap</label>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <input type="number" id="cc-historycap" min="5" max="200" value="${state.settings.historyCap}" style="flex:1; background:#0f0f11; color:#fff; border:1px solid #444; padding:6px; font-family:inherit; border-radius:3px;">
+                <span class="cc-meta" style="flex:0 0 auto;">entries</span>
+            </div>
+            <div class="cc-meta" style="margin-top:3px;">Oldest entries are dropped when the cap is reached.</div>
+        </div>
+        <div class="cc-row">
+            <label>Default pin zoom</label>
+            <select id="cc-gotozoom" style="width:100%; background:#0f0f11; color:#fff; border:1px solid #444; padding:6px; font-family:inherit; border-radius:3px;">
+                ${[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20].map(z => 
+                    `<option value="${z}" ${state.settings.gotoZoom === z ? 'selected' : ''}>${z}${z === 15 ? ' (close)' : z <= 6 ? ' (world)' : ''}</option>`
+                ).join('')}
+            </select>
+            <div class="cc-meta" style="margin-top:3px;">Zoom level used by Pin Location buttons.</div>
+        </div>
         <div class="cc-row cc-autoscan-section">
             <div class="cc-meta" style="margin-bottom:6px;">Autoscan Labels</div>
             <button id="cc-autoscan" class="cc-btn" style="background:#7fffd4; color:#000;">Arm labels</button>
@@ -421,6 +460,166 @@ function createPanel() {
     bindEvents();
 }
 
+function pushHistory(entry) {
+    const key = entry.kind + '|' + entry.text;
+    const existingIndex = state.history.findIndex(e => (e.kind + '|' + e.text) === key);
+    if (existingIndex !== -1) {
+        // Same message scanned again: refresh in place so the Go button and
+        // metadata reflect the newest scan, and move it to the top.
+        const existing = state.history[existingIndex];
+        existing.when = Date.now();
+        existing.pos = entry.pos;
+        existing.meta = entry.meta;
+        state.history.splice(existingIndex, 1);
+        state.history.unshift(existing);
+    } else {
+        entry.when = Date.now();
+        state.history.unshift(entry);
+    }
+    const cap = state.settings.historyCap || 40;
+    if (state.history.length > cap) state.history = state.history.slice(0, cap);
+    saveState(state);
+}
+function formatTimeAgo(ms) {
+    const diff = Date.now() - ms;
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return sec + 's ago';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    const day = Math.floor(hr / 24);
+    return day + 'd ago';
+}
+
+function renderHistoryList() {
+    if (!state.history.length) return '';
+    const rows = state.history.map((e, i) => {
+        const badge = e.kind === 'qr' ? 'QR' : e.kind.toUpperCase();
+        const preview = (e.text || '').slice(0, 30) + ((e.text || '').length > 30 ? '…' : '');
+        const when = formatTimeAgo(e.when);
+        const canPin = !!e.pos && !!pinFactory;
+        return `
+            <div class="cc-history-row" data-index="${i}" style="padding:6px; border-bottom:1px solid #333; cursor:pointer;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                    <span style="background:#555; padding:2px 6px; border-radius:3px; font-size:10px;">${badge}</span>
+                    <span class="cc-meta" style="flex:1; text-align:right;">${when}</span>
+                    <button class="cc-history-pin" data-index="${i}" title="Go to location"
+                        style="background:#555; color:#fff; border:none; border-radius:3px; padding:2px 6px; font-size:10px; cursor:pointer;${canPin ? '' : ' opacity:0.4; cursor:not-allowed;'}"
+                        ${canPin ? '' : 'disabled'}>Go</button>
+                </div>
+                <div style="margin-top:4px; font-size:11px; color:#ccc;">${escapeHtml(preview)}</div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="cc-history" style="margin-top:12px; border-top:1px solid #444; padding-top:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <div style="color:#888; font-size:11px;">History (${state.history.length})</div>
+                <button id="cc-clear-history" class="cc-btn" style="width:auto; padding:3px 8px; background:#555; font-size:10px;">Clear</button>
+            </div>
+            <div style="max-height:200px; overflow-y:auto; border:1px solid #333; border-radius:3px; background:#0f0f11;">
+                ${rows}
+            </div>
+        </div>
+    `;
+}
+
+function wireHistoryEvents(root) {
+    root.querySelectorAll('.cc-history-row').forEach(row => {
+        row.addEventListener('click', (ev) => {
+            if (ev.target.closest('.cc-history-pin')) return;
+            selectHistoryEntry(parseInt(row.dataset.index, 10));
+        });
+    });
+    root.querySelectorAll('.cc-history-pin').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const entry = state.history[parseInt(btn.dataset.index, 10)];
+            if (entry && entry.pos && pinFactory) pinFactory(entry.pos)();
+        });
+    });
+    const clearBtn = root.querySelector('#cc-clear-history');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            state.history = [];
+            saveState(state);
+            const empty = decodePane.querySelector('#cc-decode-empty');
+            const content = decodePane.querySelector('#cc-decode-content');
+            empty.style.display = 'block';
+            content.style.display = 'none';
+        });
+    }
+}
+
+function selectHistoryEntry(index) {
+    const entry = state.history[index];
+    if (!entry) return;
+
+    const empty = decodePane.querySelector('#cc-decode-empty');
+    const content = decodePane.querySelector('#cc-decode-content');
+    empty.style.display = 'none';
+    content.style.display = 'block';
+
+    if (entry.kind === 'qr') {
+        const darkStr = entry.meta.dark ? 'rgb(' + entry.meta.dark.join(',') + ')' : 'transparent';
+        const lightStr = entry.meta.light ? 'rgb(' + entry.meta.light.join(',') + ')' : 'transparent';
+        const posStr = entry.pos
+            ? 'Tile: ' + Math.floor(entry.pos.gx / 1000) + ',' + Math.floor(entry.pos.gy / 1000) +
+              ' | Px: ' + (entry.pos.gx % 1000) + ',' + (entry.pos.gy % 1000)
+            : '';
+
+        content.innerHTML = `
+            <div class="cc-meta">QR v${entry.meta.version} | symbol ${entry.meta.bounds.w}x${entry.meta.bounds.h} px | ${darkStr} on ${lightStr}${entry.meta.flipped ? ' | polarity retry' : ''}</div>
+            <div class="cc-meta">${posStr}</div>
+            <div class="cc-decode-result">${escapeHtml(entry.text || '')}</div>
+            <div style="display:flex; gap:6px; margin-top:6px;">
+                <button id="cc-copy" class="cc-btn" style="flex:1; background:#555; color:#fff;">Copy Text</button>
+                <button id="cc-pin" class="cc-btn" style="flex:1; background:#555; color:#fff;">Go To Location</button>
+            </div>
+            ${renderHistoryList()}
+        `;
+    } else {
+        const proto = (entry.kind === 'v2') ? 'V2' : 'V1';
+        let modeStr = (entry.meta.mode === 0) ? 'Lite' : 'Full';
+        if (entry.kind === 'v2') modeStr += entry.meta.free ? ' (free colors)' : ' (all colors)';
+        const crcStr = entry.meta.valid
+            ? 'CRC OK'
+            : 'CRC WARNING (stored ' + entry.meta.storedChecksum + ' != computed ' + entry.meta.computedChecksum + ')';
+        const posStr = entry.pos
+            ? 'Tile: ' + entry.pos.tileX + ',' + entry.pos.tileY + ' | Px: ' + entry.pos.px + ',' + entry.pos.py
+            : '';
+
+        content.innerHTML = `
+            <div class="cc-meta">${proto} ${modeStr} | ${entry.meta.length} px | ${crcStr}</div>
+            <div class="cc-meta">${posStr}</div>
+            <div class="cc-decode-result">${escapeHtml(entry.text || '')}</div>
+            <div style="display:flex; gap:6px; margin-top:6px;">
+                <button id="cc-copy" class="cc-btn" style="flex:1; background:#555; color:#fff;">Copy Text</button>
+                <button id="cc-pin" class="cc-btn" style="flex:1; background:#555; color:#fff;">Pin Location</button>
+            </div>
+            ${renderHistoryList()}
+        `;
+    }
+
+    content.querySelector('#cc-copy').addEventListener('click', () => {
+        navigator.clipboard.writeText(entry.text || '').then(() => {
+            setStatus('Copied to clipboard', 'success');
+        });
+    });
+
+    const pinBtn = content.querySelector('#cc-pin');
+    if (pinFactory && entry.pos) {
+        pinBtn.addEventListener('click', pinFactory(entry.pos));
+        pinBtn.disabled = false;
+    } else {
+        pinBtn.disabled = true;
+    }
+
+    wireHistoryEvents(content);
+}
+
 function bindEvents() {
     body.querySelectorAll('.cc-tabs button').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -432,6 +631,7 @@ function bindEvents() {
             saveState(state);
             if (state.tab === 'manager') refreshTemplateList();
             if (state.tab === 'qr') refreshQRPane();
+            if (state.tab === 'decode') refreshDecodePane();
         });
     });
 
@@ -915,6 +1115,21 @@ function bindEvents() {
         log.setMuted(!e.target.checked);
         saveState(state);
     });
+    settingsPane.querySelector('#cc-historycap').addEventListener('change', (e) => {
+        let v = parseInt(e.target.value, 10);
+        if (isNaN(v) || v < 5) v = 5;
+        if (v > 200) v = 200;
+        e.target.value = v;
+        state.settings.historyCap = v;
+        if (state.history.length > v) {
+            state.history = state.history.slice(0, v);
+        }
+        saveState(state);
+    });
+    settingsPane.querySelector('#cc-gotozoom').addEventListener('change', (e) => {
+        state.settings.gotoZoom = parseInt(e.target.value, 10);
+        saveState(state);
+    });
     settingsPane.querySelector('#cc-reset').addEventListener('click', () => {
         state.x = 20; state.y = 20;
         panel.style.left = '20px'; panel.style.top = '20px';
@@ -950,6 +1165,7 @@ function bindEvents() {
 
     if (state.tab === 'manager') refreshTemplateList();
     if (state.tab === 'qr') refreshQRPane();
+    if (state.tab === 'decode') refreshDecodePane();
 }
 
 // --- Status line, action slots, arm visual ---
@@ -987,6 +1203,16 @@ function slotFor(pane) {
 function clearAction(pane = 'encode') {
     const slot = slotFor(pane);
     if (slot) slot.innerHTML = '';
+}
+
+// If the decode tab is open and nothing is currently displayed, but history
+// exists from a previous session, surface the most recent entry so the list
+// is visible without needing a fresh decode.
+function refreshDecodePane() {
+    if (state.tab !== 'decode') return;
+    const content = decodePane.querySelector('#cc-decode-content');
+    if (content && content.style.display === 'block') return; // already showing
+    if (state.history && state.history.length) selectHistoryEntry(0);
 }
 
 function showReloadButton(pane = 'encode') {
@@ -1053,69 +1279,23 @@ function setQRArmed(armed) {
     updateQRArmButton();
 }
 
-function showQRResult(result, pos) {
+function showDecodeResult(result, tileInfo, onPin) {
     show();
 
-    const empty = decodePane.querySelector('#cc-decode-empty');
-    const content = decodePane.querySelector('#cc-decode-content');
-    empty.style.display = 'none';
-    content.style.display = 'block';
-
-    const darkStr = result.dark ? 'rgb(' + result.dark.join(',') + ')' : 'transparent';
-    const lightStr = result.light ? 'rgb(' + result.light.join(',') + ')' : 'transparent';
-    const posStr = pos ? 'Region origin: ' + pos.gx + ',' + pos.gy : '';
-
-    content.innerHTML = `
-        <div class="cc-meta">QR v${result.version} | symbol ${result.bounds.w}x${result.bounds.h} px | ${darkStr} on ${lightStr}${result.flipped ? ' | polarity retry' : ''}</div>
-        <div class="cc-meta">${posStr}</div>
-        <div class="cc-decode-result">${escapeHtml(result.text || '')}</div>
-        <button id="cc-copy" class="cc-btn" style="background:#555; color:#fff; margin-top:4px;">Copy Text</button>
-    `;
-
-    content.querySelector('#cc-copy').addEventListener('click', () => {
-        navigator.clipboard.writeText(result.text || '').then(() => {
-            setStatus('Copied to clipboard', 'success');
-        });
+    // Push to history
+    pushHistory({
+        kind: result.version === 2 ? 'v2' : 'v1',
+        text: result.text,
+        pos: tileInfo,
+        meta: {
+            mode: result.mode,
+            free: result.free,
+            length: result.length,
+            valid: result.valid,
+            storedChecksum: result.storedChecksum,
+            computedChecksum: result.computedChecksum
+        }
     });
-
-    state.tab = 'decode';
-    body.querySelectorAll('.cc-tabs button').forEach(b => b.classList.remove('active'));
-    body.querySelector('.cc-tabs button[data-tab="decode"]').classList.add('active');
-    body.querySelectorAll('.cc-pane').forEach(p => p.classList.remove('active'));
-    decodePane.classList.add('active');
-    saveState(state);
-}
-
-// --- Public API ---
-
-function init() {
-    if (document.getElementById('cc-panel')) return;
-    log.setMuted(!state.settings.consoleLogs);
-    createPanel();
-}
-
-function show() {
-    if (panel) panel.style.display = 'flex';
-    expandBody();
-    if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
-    if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
-}
-
-function toggle() {
-    if (!panel) init();
-    else panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
-    if (panel.style.display === 'flex') {
-        if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
-        if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
-    }
-}
-
-function onEncode(cb) { onEncodeCb = cb; }
-function onQREncode(cb) { onQREncodeCb = cb; }
-function onQRToggleArm(cb) { onQRToggleArmCb = cb; }
-
-function showDecodeResult(result, tileInfo) {
-    show();
 
     const empty = decodePane.querySelector('#cc-decode-empty');
     const content = decodePane.querySelector('#cc-decode-content');
@@ -1144,7 +1324,11 @@ function showDecodeResult(result, tileInfo) {
         <div class="cc-meta">${posStr}</div>
         ${warnHtml}
         <div class="cc-decode-result">${escapeHtml(result.text || '')}</div>
-        <button id="cc-copy" class="cc-btn" style="background:#555; color:#fff; margin-top:4px;">Copy Text</button>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+            <button id="cc-copy" class="cc-btn" style="flex:1; background:#555; color:#fff;">Copy Text</button>
+            <button id="cc-pin" class="cc-btn" style="flex:1; background:#555; color:#fff;">Pin Location</button>
+        </div>
+        ${renderHistoryList()}
     `;
 
     content.querySelector('#cc-copy').addEventListener('click', () => {
@@ -1152,6 +1336,16 @@ function showDecodeResult(result, tileInfo) {
             setStatus('Copied to clipboard', 'success');
         });
     });
+
+    const pinBtn = content.querySelector('#cc-pin');
+    if (onPin) {
+        pinBtn.addEventListener('click', onPin);
+    } else {
+        pinBtn.disabled = true;
+    }
+
+    // Wire history row clicks
+    wireHistoryEvents(content);
 
     state.tab = 'decode';
     body.querySelectorAll('.cc-tabs button').forEach(b => b.classList.remove('active'));
@@ -1161,13 +1355,110 @@ function showDecodeResult(result, tileInfo) {
     saveState(state);
 }
 
+function showQRResult(result, tileInfo, onPin) {
+    show();
+
+    // Push to history
+    const gx = tileInfo ? tileInfo.tileX * 1000 + tileInfo.px : 0;
+    const gy = tileInfo ? tileInfo.tileY * 1000 + tileInfo.py : 0;
+    pushHistory({
+        kind: 'qr',
+        text: result.text,
+        pos: { gx, gy },
+        meta: {
+            version: result.version,
+            dark: result.dark,
+            light: result.light,
+            flipped: result.flipped,
+            bounds: result.bounds
+        }
+    });
+
+    const empty = decodePane.querySelector('#cc-decode-empty');
+    const content = decodePane.querySelector('#cc-decode-content');
+    empty.style.display = 'none';
+    content.style.display = 'block';
+
+    const darkStr = result.dark ? 'rgb(' + result.dark.join(',') + ')' : 'transparent';
+    const lightStr = result.light ? 'rgb(' + result.light.join(',') + ')' : 'transparent';
+    const posStr = tileInfo
+        ? 'Tile: ' + tileInfo.tileX + ',' + tileInfo.tileY + ' | Px: ' + tileInfo.px + ',' + tileInfo.py
+        : '';
+
+    content.innerHTML = `
+        <div class="cc-meta">QR v${result.version} | symbol ${result.bounds.w}x${result.bounds.h} px | ${darkStr} on ${lightStr}${result.flipped ? ' | polarity retry' : ''}</div>
+        <div class="cc-meta">${posStr}</div>
+        <div class="cc-decode-result">${escapeHtml(result.text || '')}</div>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+            <button id="cc-copy" class="cc-btn" style="flex:1; background:#555; color:#fff;">Copy Text</button>
+            <button id="cc-pin" class="cc-btn" style="flex:1; background:#555; color:#fff;">Pin Location</button>
+        </div>
+        ${renderHistoryList()}
+    `;
+
+    content.querySelector('#cc-copy').addEventListener('click', () => {
+        navigator.clipboard.writeText(result.text || '').then(() => {
+            setStatus('Copied to clipboard', 'success');
+        });
+    });
+
+    const pinBtn = content.querySelector('#cc-pin');
+    if (onPin) {
+        pinBtn.addEventListener('click', onPin);
+    } else {
+        pinBtn.disabled = true;
+    }
+
+    // Wire history row clicks
+    wireHistoryEvents(content);
+
+    state.tab = 'decode';
+    body.querySelectorAll('.cc-tabs button').forEach(b => b.classList.remove('active'));
+    body.querySelector('.cc-tabs button[data-tab="decode"]').classList.add('active');
+    body.querySelectorAll('.cc-pane').forEach(p => p.classList.remove('active'));
+    decodePane.classList.add('active');
+    saveState(state);
+}
+// --- Public API ---
+
+function init() {
+    if (document.getElementById('cc-panel')) return;
+    log.setMuted(!state.settings.consoleLogs);
+    createPanel();
+}
+
+function show() {
+    if (panel) panel.style.display = 'flex';
+    expandBody();
+    if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
+    if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
+    if (state.tab === 'decode') refreshDecodePane();
+}
+
+function toggle() {
+    if (!panel) init();
+    else panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+    if (panel.style.display === 'flex') {
+        if (state.tab === 'manager' && window.refreshTemplateList) window.refreshTemplateList();
+        if (state.tab === 'qr' && window.refreshQRPane) window.refreshQRPane();
+        if (state.tab === 'decode') refreshDecodePane();
+    }
+}
+
+function onEncode(cb) { onEncodeCb = cb; }
+function onQREncode(cb) { onQREncodeCb = cb; }
+function onQRToggleArm(cb) { onQRToggleArmCb = cb; }
+
+
+
 function escapeHtml(str) {
     return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
 module.exports = {
-    init, show, toggle, setStatus, onEncode, onQREncode, onQRToggleArm, setQRArmed,
+    init, show, toggle, setStatus, onEncode, onQREncode, onQRToggleArm, setQRArmed, setPinFactory,
     showDecodeResult, showQRResult,
     clearAction, showReloadButton, showMissingColorsWarning,
-    getSettings: () => state.settings
+    getSettings: () => state.settings,
+    requestExpandedOnNextLoad
 };

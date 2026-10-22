@@ -17,6 +17,7 @@ const intercept = require('./core/intercept.js');
 const labels = require('./core/labels.js');
 const gui = require('./core/gui.js');
 const log = require('./core/log.js');
+const geo = require('./core/geo.js');
 const qrcodegen = require('qrcode-generator');
 
 // ==========================================================
@@ -100,20 +101,18 @@ const WINDOW_LEN = 11;
 
 
 function reportDecode(result, tileInfo) {
+    const gx = tileInfo.tileX * 1000 + tileInfo.px;
+    const gy = tileInfo.tileY * 1000 + tileInfo.py;
+    const pinAction = () => window.location.assign(geo.buildGotoUrl(gx, gy, gui.getSettings().gotoZoom || 15));
+
     const proto = (result.version === 2) ? 'V2' : 'V1';
     let modeStr = (result.mode === 0) ? 'Lite' : 'Full';
-    if (result.version === 2) modeStr += result.free ? '-free' : '';
-    if (result.valid) {
-        log.styled('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length + ' px, crc OK)',
-            'color:#0c8;font-weight:bold');
-    } else {
-        log.styled('[CC] Decoded ' + proto + ' ' + modeStr + ' message (' + result.length +
-            ' px) - CORRUPTED (stored ' + result.storedChecksum +
-            ' != computed ' + result.computedChecksum + ')',
-            'color:#c80;font-weight:bold');
-    }
-    log.info(result.text);
-    gui.showDecodeResult(result, tileInfo);
+    if (result.version === 2) modeStr += result.free ? ' (free colors)' : ' (all colors)';
+
+    log.styled('[CC] Decoded ' + proto + ' ' + modeStr + ', ' + result.length + ' px',
+               'color:#0c8;font-weight:bold');
+
+    gui.showDecodeResult(result, tileInfo, pinAction);
 }
 
 async function attemptDecode(tileX, tileY, px, py) {
@@ -211,19 +210,26 @@ async function runQRScan(a, b) {
         gui.setStatus('Corners look adjacent or identical - click diagonal corners.', 'error');
         return;
     }
+
+    gui.setStatus('Reading region from tiles...', 'info');
     const region = await readRegionRGBA(gx, gy, w, h);
     if (!region) {
         gui.setStatus('Region crosses unpainted canvas - cannot scan.', 'error');
         return;
     }
+
     const res = decodeQRRegion(region.data, region.width, region.height);
     if (!res) {
         gui.setStatus('No QR found in that region - click the outer diagonal corners of the symbol.', 'error');
         return;
     }
+
+    const tileInfo = geo.gridToTilePx(gx, gy);
+        const pinAction = () => window.location.assign(geo.buildGotoUrl(gx, gy, gui.getSettings().gotoZoom || 15));
+
     log.styled('[CC] Decoded QR v' + res.version + ', symbol ' + res.bounds.w + 'x' + res.bounds.h +
         ' px' + (res.flipped ? ' (polarity retry)' : ''), 'color:#0c8;font-weight:bold');
-    gui.showQRResult(res, { gx: gx, gy: gy });
+    gui.showQRResult(res, tileInfo, pinAction);
 }
 
 // window.addEventListener('cc-label-click', e => console.log('GOT LABEL CLICK', e.detail.ki));
@@ -395,6 +401,14 @@ function initApp() {
         gui.setQRArmed(qrScanArmed);
         if (qrScanArmed) gui.setStatus('QR corner select: click two diagonal corners of the symbol.', 'info', 0);
         else gui.setStatus('Corner select cancelled.', 'info');
+    });
+    gui.setPinFactory((pos) => {
+        const gx = (pos.tileX !== undefined) ? pos.tileX * 1000 + pos.px : pos.gx;
+        const gy = (pos.tileY !== undefined) ? pos.tileY * 1000 + pos.py : pos.gy;
+        return () => {
+            gui.requestExpandedOnNextLoad();
+            window.location.assign(geo.buildGotoUrl(gx, gy, gui.getSettings().gotoZoom || 15));
+        };
     });
 
     // auto-arm labels on first discovery when the GUI flag is set
